@@ -1,8 +1,7 @@
-// server.js - FINAL VERSION (2-Day Cache Update)
+// server.js - THE "EXACT LOGIC" RESTORED VERSION
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
-const cheerio = require('cheerio');
 const admin = require('firebase-admin');
 const { Groq } = require('groq-sdk');
 require('dotenv').config();
@@ -30,8 +29,7 @@ const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
 // --- CONSTANTS ---
 const CONFIG = {
-  // CHANGED: Cache now lasts for 2 Days (48 Hours)
-  CONTEST_CACHE_TTL: 48 * 60 * 60 * 1000, 
+  CONTEST_CACHE_TTL: 48 * 60 * 60 * 1000, // 2 Days Cache
   REQUEST_TIMEOUT: 15000,
   USER_AGENT: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
   CONTEST_LOOKAHEAD_DAYS: 90
@@ -39,10 +37,10 @@ const CONFIG = {
 
 
 // ============================================================================
-//  SECTION A: CONTEST AGGREGATOR (FULL VERSION)
+//  SECTION A: CONTEST AGGREGATOR (RESTORED MULTI-PLATFORM)
 // ============================================================================
 
-// 1. Codeforces (Direct API - Very Reliable)
+// 1. Codeforces Direct (Best for CF data)
 async function fetchCodeforcesContests() {
   try {
     const response = await axios.get('https://codeforces.com/api/contest.list', { timeout: CONFIG.REQUEST_TIMEOUT });
@@ -54,20 +52,17 @@ async function fetchCodeforcesContests() {
     return response.data.result
       .filter(c => c.phase === 'BEFORE' && c.startTimeSeconds > now && c.startTimeSeconds <= maxFuture)
       .map(c => ({
-        site: 'CodeForces',
+        site: 'CodeForces', // Matches frontend icon key
         name: c.name,
         start_time: new Date(c.startTimeSeconds * 1000).toISOString(),
         end_time: new Date((c.startTimeSeconds + c.durationSeconds) * 1000).toISOString(),
         duration: c.durationSeconds.toString(),
         url: `https://codeforces.com/contest/${c.id}`
       }));
-  } catch (e) { 
-    console.error('[Contest] Codeforces failed:', e.message);
-    return []; 
-  }
+  } catch (e) { return []; }
 }
 
-// 2. LeetCode (GraphQL - Reliable)
+// 2. LeetCode Direct (Best for LC data)
 async function fetchLeetCodeContests() {
   try {
     const query = `query contestList { allContests { title titleSlug startTime duration } }`;
@@ -80,22 +75,18 @@ async function fetchLeetCodeContests() {
     return response.data.data.allContests
       .filter(c => c.startTime > now)
       .map(c => ({
-        site: 'LeetCode',
+        site: 'LeetCode', // Matches frontend icon key
         name: c.title,
         start_time: new Date(c.startTime * 1000).toISOString(),
         duration: c.duration.toString(),
         url: `https://leetcode.com/contest/${c.titleSlug}/`
       }));
-  } catch (e) { 
-    console.error('[Contest] LeetCode failed:', e.message);
-    return []; 
-  }
+  } catch (e) { return []; }
 }
 
-// 3. Kontests API (The "Safety Net" for AtCoder, CodeChef, HackerRank, etc.)
-async function fetchKontestsAggregator() {
+// 3. Kontests API (Aggregator for CodeChef, AtCoder, HackerRank, etc.)
+async function fetchOtherPlatforms() {
   try {
-    // We fetch ALL known contests from this public aggregator
     const response = await axios.get('https://kontests.net/api/v1/all', { timeout: 15000 });
     const now = new Date();
     
@@ -105,81 +96,243 @@ async function fetchKontestsAggregator() {
         return t > now && !isNaN(t.getTime());
       })
       .map(c => {
-        // Normalizing names for consistency
-        let siteName = c.site;
-        if (siteName === 'CodeChef') siteName = 'CodeChef';
-        if (siteName === 'AtCoder') siteName = 'AtCoder';
-        if (siteName === 'HackerRank') siteName = 'HackerRank';
-        if (siteName === 'HackerEarth') siteName = 'HackerEarth';
-
+        // NORMALIZE SITE NAMES for Frontend Icons
+        let site = c.site;
+        if (site === 'HackerRank') site = 'HackerRank';
+        if (site === 'HackerEarth') site = 'HackerEarth';
+        if (site === 'CodeChef') site = 'CodeChef';
+        if (site === 'AtCoder') site = 'AtCoder';
+        if (site === 'Kick Start') site = 'Google';
+        
         return {
-          site: siteName,
+          site: site,
           name: c.name,
           start_time: c.start_time,
           duration: c.duration,
           url: c.url
         };
       });
-  } catch (e) { 
-    console.error('[Contest] Kontests API failed:', e.message);
-    return []; 
+  } catch (e) { return []; }
+}
+
+// 4. MAIN AGGREGATOR
+async function fetchAllContests() {
+    console.log('[Contests] Fetching data...');
+    const [cf, lc, others] = await Promise.all([
+        fetchCodeforcesContests(),
+        fetchLeetCodeContests(),
+        fetchOtherPlatforms()
+    ]);
+
+    // Merge lists
+    let all = [...cf, ...lc, ...others];
+    
+    // REMOVE DUPLICATES (Prioritize Direct Sources)
+    const uniqueMap = new Map();
+    all.forEach(c => {
+        // Create a unique key (Name + Start Time)
+        const key = `${c.name.toLowerCase()}_${c.start_time}`;
+        if (!uniqueMap.has(key)) {
+            uniqueMap.set(key, c);
+        }
+    });
+
+    // Convert back to array and sort
+    return Array.from(uniqueMap.values()).sort((a,b) => new Date(a.start_time) - new Date(b.start_time));
+}
+
+
+// ============================================================================
+//  SECTION B: PROFILE SCRAPERS (RESTORED RECENT ACTIVITY)
+// ============================================================================
+
+async function fetchLeetCodeData(username) {
+  try {
+    // UPDATED QUERY: Includes 'recentSubmissionList' which was missing before!
+    const query = `
+      query userPublicProfile($username: String!) {
+        matchedUser(username: $username) {
+          submitStats { acSubmissionNum { difficulty count } }
+          userCalendar { submissionCalendar totalActiveDays }
+          profile { ranking reputation }
+        }
+        userContestRanking(username: $username) {
+          attendedContestsCount
+          rating
+          globalRanking
+        }
+        recentSubmissionList(username: $username, limit: 10) {
+          title
+          titleSlug
+          timestamp
+          statusDisplay
+          lang
+        }
+        matchedUserStats: matchedUser(username: $username) {
+          tagProblemCounts {
+            advanced { tagName problemsSolved }
+            intermediate { tagName problemsSolved }
+            fundamental { tagName problemsSolved }
+          }
+        }
+      }
+    `;
+    const response = await axios.post(
+      'https://leetcode.com/graphql',
+      { query, variables: { username } },
+      { headers: { 'Content-Type': 'application/json' }, timeout: 10000 }
+    );
+
+    const data = response.data.data;
+    if (!data.matchedUser) return null;
+
+    const stats = data.matchedUser.submitStats.acSubmissionNum || [];
+    const easy = stats.find(s => s.difficulty === 'Easy')?.count || 0;
+    const medium = stats.find(s => s.difficulty === 'Medium')?.count || 0;
+    const hard = stats.find(s => s.difficulty === 'Hard')?.count || 0;
+
+    // Process Topics
+    const topicCount = {};
+    const tagData = data.matchedUserStats?.tagProblemCounts;
+    if (tagData) {
+      const allTags = [...(tagData.fundamental || []), ...(tagData.intermediate || []), ...(tagData.advanced || [])];
+      allTags.forEach(item => {
+        if (item && item.tagName && item.problemsSolved > 0) {
+          topicCount[item.tagName] = (topicCount[item.tagName] || 0) + item.problemsSolved;
+        }
+      });
+    }
+
+    return {
+      platform: 'LeetCode',
+      username,
+      totalSolved: easy + medium + hard,
+      easy, medium, hard,
+      ranking: data.matchedUser.profile?.ranking || 0,
+      contestRating: data.userContestRanking?.rating || 0,
+      contestsAttended: data.userContestRanking?.attendedContestsCount || 0,
+      globalRank: data.userContestRanking?.globalRanking || 0,
+      // THIS IS THE PART YOU MISSED:
+      recentSubmissions: data.recentSubmissionList || [], 
+      topics: topicCount,
+      streak: data.matchedUser.userCalendar?.totalActiveDays > 0 ? 1 : 0,
+      totalActiveDays: data.matchedUser.userCalendar?.totalActiveDays || 0
+    };
+  } catch (error) {
+    console.error('[LeetCode] Error:', error.message);
+    return null;
   }
 }
 
-// 4. MAIN AGGREGATOR (Merge & Remove Duplicates)
-async function fetchAllContests() {
-    console.log('[Contests] Fetching from Codeforces, LeetCode, and Aggregator...');
-    
-    const [cf, lc, aggregated] = await Promise.all([
-        fetchCodeforcesContests(),
-        fetchLeetCodeContests(),
-        fetchKontestsAggregator()
+async function fetchCodeforcesData(username) {
+  try {
+    const [userInfo, userStatus] = await Promise.all([
+      axios.get(`https://codeforces.com/api/user.info?handles=${username}`, { timeout: 10000 }),
+      axios.get(`https://codeforces.com/api/user.status?handle=${username}&from=1&count=100`, { timeout: 10000 })
     ]);
+    if(userInfo.data.status !== 'OK') return null;
+    const user = userInfo.data.result[0];
+    const submissions = userStatus.data.result || [];
     
-    // Combine everything
-    let allRaw = [...cf, ...lc, ...aggregated];
+    const solvedProblems = new Set();
+    const topicCount = {};
     
-    // REMOVE DUPLICATES (Because Kontests might also return Codeforces data)
-    const uniqueContests = [];
-    const seenUrls = new Set();
-    
-    for (const contest of allRaw) {
-        // Create a unique key based on URL or Name+Time
-        const key = contest.url || `${contest.name}-${contest.start_time}`;
-        
-        if (!seenUrls.has(key)) {
-            seenUrls.add(key);
-            uniqueContests.push(contest);
-        }
-    }
-    
-    console.log(`[Contests] Total unique found: ${uniqueContests.length}`);
-    
-    // Sort by date (soonest first)
-    return uniqueContests.sort((a,b) => new Date(a.start_time) - new Date(b.start_time));
+    // Process Submissions
+    submissions.forEach(sub => {
+      if (sub.verdict === 'OK') {
+        solvedProblems.add(`${sub.problem.contestId}-${sub.problem.index}`);
+        sub.problem.tags?.forEach(tag => { topicCount[tag] = (topicCount[tag] || 0) + 1; });
+      }
+    });
+
+    return {
+      platform: 'Codeforces',
+      username,
+      totalSolved: solvedProblems.size,
+      rating: user.rating || 0,
+      maxRating: user.maxRating || 0,
+      rank: user.rank || 'unrated',
+      topics: topicCount,
+      lastUpdated: new Date().toISOString()
+    };
+  } catch (error) { return null; }
 }
 
 // ============================================================================
-//  SECTION B: ROADMAP SERVICE (Working)
+//  SECTION C: ROUTES (ALL)
 // ============================================================================
+
+// 1. UPDATE PROFILE
+app.post('/api/update-coding-profile', async (req, res) => {
+  try {
+    const { userId, userProfiles } = req.body;
+    if (!userId || !userProfiles) return res.status(400).json({ error: 'Missing data' });
+    
+    // Fetch data
+    const results = await Promise.all([
+        (userProfiles.leetcode) ? fetchLeetCodeData(userProfiles.leetcode) : null,
+        (userProfiles.codeforces) ? fetchCodeforcesData(userProfiles.codeforces) : null
+    ]);
+    
+    const validResults = results.filter(r => r !== null);
+    
+    // Aggregate Totals
+    const totalSolved = validResults.reduce((acc, r) => acc + (r.totalSolved||0), 0);
+    const allTopics = {};
+    validResults.forEach(r => { 
+        if(r.topics) Object.entries(r.topics).forEach(([k,v]) => allTopics[k] = (allTopics[k]||0)+v); 
+    });
+
+    const newData = {
+        userId,
+        userProfiles,
+        platforms: validResults,
+        totalSolved,
+        topics: allTopics,
+        // Ensure streak is captured
+        streakData: { currentStreak: validResults[0]?.streak || 0 }, 
+        lastUpdated: new Date().toISOString()
+    };
+
+    await db.collection('CodingProfiles').doc(userId).set(newData, { merge: true });
+    res.json({ success: true, data: newData });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/coding-profile/:userId', async (req, res) => {
+    const doc = await db.collection('CodingProfiles').doc(req.params.userId).get();
+    res.json({ success: true, data: doc.exists ? doc.data() : null });
+});
+
+
+// 2. CONTESTS ROUTE (With Cache)
+app.get('/api/contests', async (req, res) => {
+  try {
+    // Check Cache
+    const cacheDoc = await db.collection('cache').doc('contests').get();
+    if (cacheDoc.exists) {
+        const data = cacheDoc.data();
+        if ((Date.now() - data.updatedAt) < CONFIG.CONTEST_CACHE_TTL) {
+            return res.json({ contests: data.data, source: 'cache' });
+        }
+    }
+
+    // Fetch Fresh
+    const freshContests = await fetchAllContests();
+
+    // Save Cache
+    if (freshContests.length > 0) {
+        await db.collection('cache').doc('contests').set({ data: freshContests, updatedAt: Date.now() });
+    }
+    res.json({ contests: freshContests, source: 'api' });
+  } catch (e) { res.status(500).json({ error: e.message, contests: [] }); }
+});
+
+
+// 3. ROADMAP (Corrected Prompts)
 const ROADMAP_SYSTEM_PROMPT = `You are an expert coding mentor. Generate a detailed, structured learning roadmap.
 CRITICAL: Output STRICT JSON only. No markdown.
-JSON STRUCTURE:
-{
-  "roadmap_title": "string", "user_level": "string", "strategy_summary": "string",
-  "phases": [
-    {
-      "phase_number": 1, "phase_title": "string", "duration_days": 5, "focus_reason": "string",
-      "tasks": [
-        {
-          "concept_name": "string", "priority": "High", "estimated_time_minutes": 90, "difficulty": "Medium",
-          "why_this_matters": "string",
-          "practice_questions": [ { "question_title": "string", "problem_id": "1", "platform": "LeetCode", "difficulty": "Easy" } ]
-        }
-      ]
-    }
-  ]
-}`;
+JSON STRUCTURE: { "roadmap_title": "string", "user_level": "string", "strategy_summary": "string", "phases": [ { "phase_number": 1, "phase_title": "string", "duration_days": 5, "focus_reason": "string", "tasks": [ { "concept_name": "string", "priority": "High", "estimated_time_minutes": 90, "difficulty": "Medium", "why_this_matters": "string", "practice_questions": [ { "question_title": "string", "problem_id": "1", "platform": "LeetCode", "difficulty": "Easy" } ] } ] } ] }`;
 
 app.post('/api/generate-roadmap', async (req, res) => {
   try {
@@ -221,67 +374,7 @@ app.post('/api/roadmap/:userId/progress', async (req, res) => {
 });
 
 
-// ============================================================================
-//  SECTION C: PROFILE SCRAPERS (Working)
-// ============================================================================
-async function fetchLeetCodeData(username) {
-  try {
-    const query = `query userPublicProfile($username: String!) {
-        matchedUser(username: $username) { submitStats { acSubmissionNum { difficulty count } } userCalendar { totalActiveDays } }
-        matchedUserStats: matchedUser(username: $username) { tagProblemCounts { fundamental { tagName problemsSolved } intermediate { tagName problemsSolved } advanced { tagName problemsSolved } } }
-    }`;
-    const response = await axios.post('https://leetcode.com/graphql', { query, variables: { username } }, { headers: { 'Content-Type': 'application/json' }, timeout: 8000 });
-    const data = response.data.data;
-    if (!data.matchedUser) return null;
-    const stats = data.matchedUser.submitStats.acSubmissionNum || [];
-    const total = stats.reduce((acc, curr) => acc + curr.count, 0);
-    const topicCount = {};
-    ['fundamental', 'intermediate', 'advanced'].forEach(l => data.matchedUserStats?.tagProblemCounts?.[l]?.forEach(t => topicCount[t.tagName] = (topicCount[t.tagName]||0)+t.problemsSolved));
-    return { platform: 'LeetCode', username, totalSolved: total, topics: topicCount, streak: data.matchedUser.userCalendar?.totalActiveDays > 0 ? 1 : 0 };
-  } catch (e) { return null; }
-}
-
-async function fetchCodeforcesData(username) {
-  try {
-    const status = await axios.get(`https://codeforces.com/api/user.status?handle=${username}&from=1&count=100`, { timeout: 8000 });
-    const solved = new Set();
-    const topics = {};
-    status.data.result?.forEach(sub => {
-        if (sub.verdict === 'OK') {
-            solved.add(`${sub.problem.contestId}-${sub.problem.index}`);
-            sub.problem.tags?.forEach(t => topics[t] = (topics[t]||0)+1);
-        }
-    });
-    return { platform: 'Codeforces', username, totalSolved: solved.size, topics };
-  } catch (e) { return null; }
-}
-
-app.post('/api/update-coding-profile', async (req, res) => {
-  try {
-    const { userId, userProfiles } = req.body;
-    const results = await Promise.all([
-        (userProfiles.leetcode) ? fetchLeetCodeData(userProfiles.leetcode) : null,
-        (userProfiles.codeforces) ? fetchCodeforcesData(userProfiles.codeforces) : null
-    ]);
-    const validResults = results.filter(r => r !== null);
-    const totalSolved = validResults.reduce((acc, r) => acc + (r.totalSolved||0), 0);
-    const allTopics = {};
-    validResults.forEach(r => { if(r.topics) Object.entries(r.topics).forEach(([k,v]) => allTopics[k] = (allTopics[k]||0)+v); });
-    const newData = { userId, userProfiles, platforms: validResults, totalSolved, topics: allTopics, lastUpdated: new Date().toISOString() };
-    await db.collection('CodingProfiles').doc(userId).set(newData, { merge: true });
-    res.json({ success: true, data: newData });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.get('/api/coding-profile/:userId', async (req, res) => {
-    const doc = await db.collection('CodingProfiles').doc(req.params.userId).get();
-    res.json({ success: true, data: doc.exists ? doc.data() : null });
-});
-
-
-// ============================================================================
-//  SECTION D: JOBS & APTITUDE (Working)
-// ============================================================================
+// 4. JOBS & APTITUDE
 app.get('/api/jobs', async (req, res) => {
     try {
         const res1 = await axios.get('https://remotive.com/api/remote-jobs');
@@ -312,34 +405,6 @@ app.post('/api/save-test-result', async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-
-// ============================================================================
-//  SECTION E: CONTEST ROUTE (The Fixed Part)
-// ============================================================================
-app.get('/api/contests', async (req, res) => {
-  try {
-    // 1. Check Cache
-    const cacheDoc = await db.collection('cache').doc('contests').get();
-    if (cacheDoc.exists) {
-        const data = cacheDoc.data();
-        // Check if cache is younger than 2 DAYS (48 hours)
-        if ((Date.now() - data.updatedAt) < CONFIG.CONTEST_CACHE_TTL) {
-            return res.json({ contests: data.data, source: 'cache' });
-        }
-    }
-
-    // 2. Fetch Fresh
-    const freshContests = await fetchAllContests();
-
-    // 3. Save Cache
-    if (freshContests.length > 0) {
-        await db.collection('cache').doc('contests').set({ data: freshContests, updatedAt: Date.now() });
-    }
-    res.json({ contests: freshContests, source: 'api' });
-  } catch (e) { res.status(500).json({ error: e.message, contests: [] }); }
-});
-
 // START
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`✅ Server running on Port ${PORT}`));
-
