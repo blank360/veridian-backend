@@ -42,7 +42,7 @@ const CONFIG = {
 //  SECTION A: CONTEST AGGREGATOR (FULL VERSION)
 // ============================================================================
 
-// 1. Codeforces
+// 1. Codeforces (Direct API - Very Reliable)
 async function fetchCodeforcesContests() {
   try {
     const response = await axios.get('https://codeforces.com/api/contest.list', { timeout: CONFIG.REQUEST_TIMEOUT });
@@ -61,63 +61,13 @@ async function fetchCodeforcesContests() {
         duration: c.durationSeconds.toString(),
         url: `https://codeforces.com/contest/${c.id}`
       }));
-  } catch (e) { return []; }
+  } catch (e) { 
+    console.error('[Contest] Codeforces failed:', e.message);
+    return []; 
+  }
 }
 
-// 2. CodeChef (RSS Scraper)
-async function fetchCodeChefContests() {
-  try {
-    const response = await axios.get('https://www.codechef.com/feed/contests.rss', { 
-       headers: { 'User-Agent': CONFIG.USER_AGENT }, timeout: CONFIG.REQUEST_TIMEOUT 
-    });
-    const $ = cheerio.load(response.data, { xmlMode: true });
-    const contests = [];
-    const now = new Date();
-    
-    $('item').each((_, item) => {
-      const title = $(item).find('title').text();
-      const link = $(item).find('link').text();
-      const pubDate = new Date($(item).find('pubDate').text());
-      if (pubDate > now) {
-         contests.push({
-           site: 'CodeChef', name: title, 
-           start_time: pubDate.toISOString(),
-           duration: '10800', url: link
-         });
-      }
-    });
-    return contests;
-  } catch (e) { return []; }
-}
-
-// 3. AtCoder (HTML Scraper)
-async function fetchAtCoderContests() {
-  try {
-    const response = await axios.get('https://atcoder.jp/contests/', { headers: { 'User-Agent': CONFIG.USER_AGENT } });
-    const $ = cheerio.load(response.data);
-    const contests = [];
-    const now = new Date();
-    
-    $('#contest-table-upcoming tbody tr').each((_, row) => {
-      const cols = $(row).find('td');
-      if (cols.length < 4) return;
-      const startTime = new Date($(cols[0]).text().trim());
-      const name = $(cols[1]).find('a').text().trim();
-      const url = 'https://atcoder.jp' + $(cols[1]).find('a').attr('href');
-      
-      if (startTime > now) {
-         contests.push({
-           site: 'AtCoder', name, 
-           start_time: startTime.toISOString(),
-           duration: '7200', url
-         });
-      }
-    });
-    return contests;
-  } catch (e) { return []; }
-}
-
-// 4. LeetCode (GraphQL)
+// 2. LeetCode (GraphQL - Reliable)
 async function fetchLeetCodeContests() {
   try {
     const query = `query contestList { allContests { title titleSlug startTime duration } }`;
@@ -125,53 +75,89 @@ async function fetchLeetCodeContests() {
        headers: { 'Content-Type': 'application/json', 'User-Agent': CONFIG.USER_AGENT },
        timeout: CONFIG.REQUEST_TIMEOUT
     });
+    
     const now = Date.now() / 1000;
     return response.data.data.allContests
       .filter(c => c.startTime > now)
       .map(c => ({
-        site: 'LeetCode', name: c.title,
+        site: 'LeetCode',
+        name: c.title,
         start_time: new Date(c.startTime * 1000).toISOString(),
         duration: c.duration.toString(),
         url: `https://leetcode.com/contest/${c.titleSlug}/`
       }));
-  } catch (e) { return []; }
+  } catch (e) { 
+    console.error('[Contest] LeetCode failed:', e.message);
+    return []; 
+  }
 }
 
-// 5. Kontests (Backup for HackerRank/Other)
-async function fetchKontestsContests() {
+// 3. Kontests API (The "Safety Net" for AtCoder, CodeChef, HackerRank, etc.)
+async function fetchKontestsAggregator() {
   try {
-    const response = await axios.get('https://kontests.net/api/v1/all', { timeout: 10000 });
+    // We fetch ALL known contests from this public aggregator
+    const response = await axios.get('https://kontests.net/api/v1/all', { timeout: 15000 });
     const now = new Date();
+    
     return response.data
-      .filter(c => new Date(c.start_time) > now)
-      .map(c => ({
-        site: c.site, name: c.name,
-        start_time: c.start_time, duration: c.duration, url: c.url
-      }));
-  } catch (e) { return []; }
+      .filter(c => {
+        const t = new Date(c.start_time);
+        return t > now && !isNaN(t.getTime());
+      })
+      .map(c => {
+        // Normalizing names for consistency
+        let siteName = c.site;
+        if (siteName === 'CodeChef') siteName = 'CodeChef';
+        if (siteName === 'AtCoder') siteName = 'AtCoder';
+        if (siteName === 'HackerRank') siteName = 'HackerRank';
+        if (siteName === 'HackerEarth') siteName = 'HackerEarth';
+
+        return {
+          site: siteName,
+          name: c.name,
+          start_time: c.start_time,
+          duration: c.duration,
+          url: c.url
+        };
+      });
+  } catch (e) { 
+    console.error('[Contest] Kontests API failed:', e.message);
+    return []; 
+  }
 }
 
-// 6. MAIN AGGREGATOR
+// 4. MAIN AGGREGATOR (Merge & Remove Duplicates)
 async function fetchAllContests() {
-    console.log('[Contests] Fetching all sources...');
-    const [cf, cc, ac, lc, kt] = await Promise.all([
+    console.log('[Contests] Fetching from Codeforces, LeetCode, and Aggregator...');
+    
+    const [cf, lc, aggregated] = await Promise.all([
         fetchCodeforcesContests(),
-        fetchCodeChefContests(),
-        fetchAtCoderContests(),
         fetchLeetCodeContests(),
-        fetchKontestsContests()
+        fetchKontestsAggregator()
     ]);
     
-    // Merge all arrays
-    let all = [...cf, ...cc, ...ac, ...lc];
+    // Combine everything
+    let allRaw = [...cf, ...lc, ...aggregated];
     
-    // If primary sources failed, use backup (Kontests)
-    if (all.length === 0) all = kt;
+    // REMOVE DUPLICATES (Because Kontests might also return Codeforces data)
+    const uniqueContests = [];
+    const seenUrls = new Set();
     
-    // Sort by date
-    return all.sort((a,b) => new Date(a.start_time) - new Date(b.start_time));
+    for (const contest of allRaw) {
+        // Create a unique key based on URL or Name+Time
+        const key = contest.url || `${contest.name}-${contest.start_time}`;
+        
+        if (!seenUrls.has(key)) {
+            seenUrls.add(key);
+            uniqueContests.push(contest);
+        }
+    }
+    
+    console.log(`[Contests] Total unique found: ${uniqueContests.length}`);
+    
+    // Sort by date (soonest first)
+    return uniqueContests.sort((a,b) => new Date(a.start_time) - new Date(b.start_time));
 }
-
 
 // ============================================================================
 //  SECTION B: ROADMAP SERVICE (Working)
@@ -356,3 +342,4 @@ app.get('/api/contests', async (req, res) => {
 // START
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`✅ Server running on Port ${PORT}`));
+
