@@ -664,15 +664,8 @@ app.get('/api/jobs', async (req, res) => {
   }
 });
 
-// 404
-app.use((req, res) => res.status(404).json({ error: 'Not Found' }));
-
-// Error
-app.use((err, req, res, next) => {
-  console.error('[Error]:', err);
-  res.status(500).json({ error: 'Internal Error' });
-});
 // ========== AI INTERVIEW (NO DATABASE STORAGE) ==========
+// THIS IS THE NEW LOGIC - INSERTED CORRECTLY BEFORE 404
 app.post('/api/interview-practice', async (req, res) => {
   try {
     const { language } = req.body;
@@ -720,13 +713,21 @@ app.post('/api/interview-practice', async (req, res) => {
   }
 });
 
+// 404 - Must be AFTER all routes
+app.use((req, res) => res.status(404).json({ error: 'Not Found' }));
+
+// Error - Must be AFTER 404
+app.use((err, req, res, next) => {
+  console.error('[Error]:', err);
+  res.status(500).json({ error: 'Internal Error' });
+});
+
 // Start
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log('\n' + '='.repeat(60));
   console.log(`✅ SERVER RUNNING ON PORT ${PORT}`);
   console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`🔥 Features: Profiles, Contests, Aptitude, Roadmaps, Jobs`);
+  console.log(`🔥 Features: Profiles, Contests, Aptitude, Roadmaps, Jobs, AI Interview`);
   console.log('='.repeat(60) + '\n');
 });
-
