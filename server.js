@@ -670,29 +670,29 @@ app.post('/api/interview-practice', async (req, res) => {
   try {
     const { language } = req.body;
     
-    // Basic validation
     if (!language || typeof language !== 'string') {
         return res.status(400).json({ error: 'Language is required' });
     }
 
-    // Prompt for the AI
+    // UPDATED PROMPT: Forces AI to use exact text matches
     const prompt = `Generate 20 multiple-choice interview questions for "${language}".
     Difficulty: Mixed (Junior to Senior).
     CRITICAL: Output STRICT JSON only. No markdown.
+    
     JSON Format:
     {
       "questions": [
         {
           "id": 1,
           "question": "Question text?",
-          "options": ["A", "B", "C", "D"],
-          "correctAnswer": "A",
+          "options": ["Option A Text", "Option B Text", "Option C Text", "Option D Text"],
+          "correctAnswer": "Option B Text", 
           "explanation": "Explanation here."
         }
       ]
-    }`;
+    }
+    IMPORTANT: "correctAnswer" MUST be the EXACT string from the "options" array. Do NOT use "A", "B", "C", or "D".`;
 
-    // Call Groq AI
     const completion = await groq.chat.completions.create({
       messages: [
         { role: 'system', content: 'You are a technical interviewer. Output JSON only.' },
@@ -703,7 +703,6 @@ app.post('/api/interview-practice', async (req, res) => {
       response_format: { type: 'json_object' }
     });
 
-    // Parse and send back (No DB save)
     const data = JSON.parse(completion.choices[0].message.content);
     res.json({ success: true, questions: data.questions });
 
@@ -712,7 +711,6 @@ app.post('/api/interview-practice', async (req, res) => {
     res.status(500).json({ error: 'Failed to generate questions' });
   }
 });
-
 // 404 - Must be AFTER all routes
 app.use((req, res) => res.status(404).json({ error: 'Not Found' }));
 
@@ -731,3 +729,4 @@ app.listen(PORT, () => {
   console.log(`🔥 Features: Profiles, Contests, Aptitude, Roadmaps, Jobs, AI Interview`);
   console.log('='.repeat(60) + '\n');
 });
+
