@@ -672,6 +672,53 @@ app.use((err, req, res, next) => {
   console.error('[Error]:', err);
   res.status(500).json({ error: 'Internal Error' });
 });
+// ========== AI INTERVIEW (NO DATABASE STORAGE) ==========
+app.post('/api/interview-practice', async (req, res) => {
+  try {
+    const { language } = req.body;
+    
+    // Basic validation
+    if (!language || typeof language !== 'string') {
+        return res.status(400).json({ error: 'Language is required' });
+    }
+
+    // Prompt for the AI
+    const prompt = `Generate 20 multiple-choice interview questions for "${language}".
+    Difficulty: Mixed (Junior to Senior).
+    CRITICAL: Output STRICT JSON only. No markdown.
+    JSON Format:
+    {
+      "questions": [
+        {
+          "id": 1,
+          "question": "Question text?",
+          "options": ["A", "B", "C", "D"],
+          "correctAnswer": "A",
+          "explanation": "Explanation here."
+        }
+      ]
+    }`;
+
+    // Call Groq AI
+    const completion = await groq.chat.completions.create({
+      messages: [
+        { role: 'system', content: 'You are a technical interviewer. Output JSON only.' },
+        { role: 'user', content: prompt }
+      ],
+      model: 'llama-3.1-8b-instant',
+      temperature: 0.3,
+      response_format: { type: 'json_object' }
+    });
+
+    // Parse and send back (No DB save)
+    const data = JSON.parse(completion.choices[0].message.content);
+    res.json({ success: true, questions: data.questions });
+
+  } catch (error) {
+    console.error('AI Gen Error:', error.message);
+    res.status(500).json({ error: 'Failed to generate questions' });
+  }
+});
 
 // Start
 const PORT = process.env.PORT || 5000;
@@ -682,3 +729,4 @@ app.listen(PORT, () => {
   console.log(`🔥 Features: Profiles, Contests, Aptitude, Roadmaps, Jobs`);
   console.log('='.repeat(60) + '\n');
 });
+
