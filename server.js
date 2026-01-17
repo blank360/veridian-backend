@@ -50,7 +50,7 @@ const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
 // Config
 const CONFIG = {
-  CONTEST_CACHE_TTL: 60 * 60 * 1000,
+  CONTEST_CACHE_TTL: 2 * 60 * 60 * 1000,
   REQUEST_TIMEOUT: 12000,
   USER_AGENT: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
   CONTEST_LOOKAHEAD_DAYS: 90
@@ -729,4 +729,5 @@ app.listen(PORT, () => {
   console.log(`🔥 Features: Profiles, Contests, Aptitude, Roadmaps, Jobs, AI Interview`);
   console.log('='.repeat(60) + '\n');
 });
+
 
