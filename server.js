@@ -406,8 +406,20 @@ async function saveTestResult(userId, stats) {
 }
 
 // ========== ROADMAP ==========
-const ROADMAP_PROMPT = `Expert coding mentor. Generate structured roadmap.
-OUTPUT STRICT JSON ONLY. No markdown.
+const ROADMAP_PROMPT = `You are an elite coding mentor. Create a structured, strict level-wise roadmap.
+OUTPUT STRICT JSON ONLY. No markdown. No conversational text.
+
+STRUCTURE RULES:
+1. "phases": Must progress strictly: Fundamentals -> Deep Dive -> Advanced/Mastery.
+2. "tasks": Must be concept-focused (e.g., "Sliding Window", "Graph BFS").
+3. "practice_questions": 
+   - MUST be real, existing problems.
+   - search across platforms: LeetCode, CodeForces, GeeksForGeeks, HackerRank, AtCoder, SPOJ.
+   - Do NOT generate fake IDs like "1.1.1" or "LeetCode #1" unless it is the actual ID.
+   - If the exact ID/Number is not applicable (e.g. GFG), leave "problem_id" as an empty string "".
+   - "question_description": valid 1-2 sentence summary of what the problem asks.
+
+JSON SCHEMA:
 {
   "roadmap_title": "str",
   "user_level": "str",
@@ -419,15 +431,16 @@ OUTPUT STRICT JSON ONLY. No markdown.
     "focus_reason": "str",
     "tasks": [{
       "concept_name": "str",
-      "priority": "High",
+      "priority": "High", // High, Medium, Low
       "estimated_time_minutes": 90,
       "difficulty": "Medium",
       "why_this_matters": "str",
       "practice_questions": [{
         "question_title": "str",
-        "problem_id": "1",
-        "platform": "LeetCode",
-        "difficulty": "Easy"
+        "problem_id": "str", // e.g., "1", "4A", or "" if none
+        "platform": "LeetCode", // or CodeForces, GFG, etc.
+        "difficulty": "Easy",
+        "question_description": "Short summary of the problem statement."
       }]
     }]
   }]
@@ -600,16 +613,26 @@ app.post('/api/generate-roadmap', async (req, res) => {
     const { userId, userContext, skillSnapshot } = req.body;
     if (!userId) return res.status(400).json({ error: 'Missing userId' });
     
-    const userPrompt = `USER: ${userContext || 'Beginner'}. SKILLS: ${JSON.stringify(skillSnapshot || {})}
-INSTRUCTIONS: 3 PHASES. 3 TASKS each. 6 QUESTIONS each task (platform: LeetCode, problem_id: exact ID).`;
+    // UPDATED USER PROMPT: Enforces level-wise generation
+    const userPrompt = `
+    USER CONTEXT: ${userContext || 'Beginner'}.
+    CURRENT SKILLS: ${JSON.stringify(skillSnapshot || {})}
+    
+    REQUIREMENTS:
+    1. Create 3 PHASES.
+    2. Each Task must have 4-6 specific questions.
+    3. Questions must be SORTED by difficulty inside the task (Easy -> Medium -> Hard).
+    4. Provide a "question_description" for every question.
+    5. Use mixed platforms (LeetCode, CodeForces, etc.) where best applicable.
+    `;
     
     const completion = await groq.chat.completions.create({
       messages: [
         { role: 'system', content: ROADMAP_PROMPT },
         { role: 'user', content: userPrompt }
       ],
-      model: 'llama-3.1-8b-instant',
-      temperature: 0.3,
+      model: 'llama-3.1-8b-instant', 
+      temperature: 0.2, // Lowered temperature to reduce hallucination of fake IDs
       max_tokens: 8000,
       response_format: { type: 'json_object' }
     });
@@ -626,7 +649,6 @@ INSTRUCTIONS: 3 PHASES. 3 TASKS each. 6 QUESTIONS each task (platform: LeetCode,
     res.status(500).json({ error: e.message });
   }
 });
-
 app.delete('/api/roadmap/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
@@ -729,5 +751,6 @@ app.listen(PORT, () => {
   console.log(`🔥 Features: Profiles, Contests, Aptitude, Roadmaps, Jobs, AI Interview`);
   console.log('='.repeat(60) + '\n');
 });
+
 
 
