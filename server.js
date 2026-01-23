@@ -1,4 +1,5 @@
-
+// server.js - COMPLETE PRODUCTION BACKEND
+// Merges: Contests, Profiles, Aptitude, Roadmaps, Jobs
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
@@ -9,6 +10,7 @@ require('dotenv').config();
 
 const app = express();
 
+// CORS
 app.use(cors({
   origin: process.env.FRONTEND_URL || '*',
   methods: ['GET', 'POST', 'DELETE', 'PUT', 'PATCH'],
@@ -16,12 +18,14 @@ app.use(cors({
 }));
 app.use(express.json({ limit: '10mb' }));
 
+// Health
 app.get('/health', (req, res) => res.json({ 
   status: 'ok', 
   timestamp: new Date().toISOString(),
-  version: '4.0.0'
+  version: '4.2.0' // Version bumped for "More Questions" update
 }));
 
+// Firebase Init
 if (!admin.apps.length) {
   try {
     const serviceAccount = process.env.FIREBASE_KEY 
@@ -37,12 +41,14 @@ if (!admin.apps.length) {
 }
 const db = admin.firestore();
 
+// Groq Init
 if (!process.env.GROQ_API_KEY) {
   console.error('[Groq] ❌ Missing API Key');
   process.exit(1);
 }
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
+// Config
 const CONFIG = {
   CONTEST_CACHE_TTL: 2 * 60 * 60 * 1000,
   REQUEST_TIMEOUT: 12000,
@@ -50,7 +56,7 @@ const CONFIG = {
   CONTEST_LOOKAHEAD_DAYS: 90
 };
 
-//  CONTESTS 
+// ========== CONTESTS ==========
 const isContestInTimeframe = (startTimeSeconds) => {
   const now = Math.floor(Date.now() / 1000);
   const max = now + (CONFIG.CONTEST_LOOKAHEAD_DAYS * 24 * 60 * 60);
@@ -183,7 +189,7 @@ async function saveCachedContests(contests) {
   } catch { return false; }
 }
 
-//  PROFILES 
+// ========== PROFILES ==========
 async function fetchLeetCodeData(username) {
   try {
     const query = `
@@ -337,7 +343,7 @@ async function aggregateAllPlatforms(userProfiles) {
   };
 }
 
-//  APTITUDE 
+// ========== APTITUDE ==========
 async function generateAptitudeTest(userId, difficulty = 'medium') {
   try {
     const prompt = `Create General Aptitude Test (20 Qs, 4 categories, 5 each) JSON only:
@@ -399,18 +405,16 @@ async function saveTestResult(userId, stats) {
   }
 }
 
-// ========== ROADMAP
-// This is the specific section updated to fix AI hallucinations
+// ========== ROADMAP (UPDATED: High Quantity Logic) ==========
 const ROADMAP_PROMPT = `You are an expert technical mentor. Generate a structured learning roadmap based on the user's specific request.
 
 CRITICAL INSTRUCTIONS:
 1. OUTPUT FORMAT: STRICT JSON only. No Markdown.
-2. DOMAIN DETECTION:
-   - IF DSA/ALGO: Use "LeetCode" or "CodeForces" as the platform. Provide REAL problem IDs (e.g., "1", "206").
-   - IF AI/ML/WEB/DEV: Do NOT use LeetCode IDs for concepts like "Neural Networks" or "React Props". 
-     - Instead, set "platform" to "Project", "Kaggle", "Implementation", or "Concept".
-     - Set "problem_id" to a short slug (e.g., "proj-mnist", "impl-vector").
-     - "question_title" should be a specific task (e.g., "Build a MNIST Classifier", "Implement Vector Class").
+2. VOLUME: Each 'task' MUST contain 5 to 7 practice questions. This is mandatory.
+3. DOMAIN DETECTION:
+   - IF DSA/ALGO: Use "LeetCode" or "CodeForces" as the platform. Provide REAL problem IDs.
+   - IF AI/ML/WEB/DEV: Do NOT use LeetCode IDs. Use "Project", "Kaggle", "Implementation".
+     - Set "problem_id" to a slug (e.g. "proj-mnist").
 
 JSON STRUCTURE:
 {
@@ -445,7 +449,7 @@ JSON STRUCTURE:
   ]
 }`;
 
-//  JOBS 
+// ========== JOBS ==========
 const normalizeType = (type) => {
   if (!type) return 'Full-time';
   const t = type.toLowerCase();
@@ -510,7 +514,7 @@ async function fetchJobs() {
   return all.sort(() => Math.random() - 0.5);
 }
 
-// ROUTES -----------------------
+// ========== ROUTES ==========
 
 // Profile
 app.post('/api/update-coding-profile', async (req, res) => {
@@ -606,25 +610,27 @@ app.get('/api/aptitude-history/:userId', async (req, res) => {
   }
 });
 
-// Roadmap (UPDATED ROUTE: Fixes LeetCode ID hallucination)
+// Roadmap (UPDATED ROUTE: High Quantity + Domain Aware)
 app.post('/api/generate-roadmap', async (req, res) => {
   try {
     const { userId, userContext, skillSnapshot } = req.body;
     if (!userId) return res.status(400).json({ error: 'Missing userId' });
     
-    // UPDATED USER PROMPT: Guides the AI based on domain
+    // UPDATED USER PROMPT: STRICTLY ENFORCES 5-7 QUESTIONS
     const userPrompt = `
     USER GOAL/CONTEXT: "${userContext || 'Beginner'}"
     USER STATS: ${JSON.stringify(skillSnapshot || {})}
     
-    TASK: Create a 3-Phase Roadmap tailored strictly to the user's goal.
+    TASK: Create a 3-Phase Roadmap.
     
-    GUIDELINES:
-    1. If the user asks for AI/ML: Start with Math/Python -> ML Algorithms -> Deep Learning. Do NOT suggest LeetCode for "Linear Algebra". Suggest "Implementation" tasks.
-    2. If the user asks for DSA: Focus on Patterns (Sliding Window, etc.) and provide LeetCode IDs.
-    3. If the user asks for Web Dev: Focus on building components/APIs. Platform should be "VS Code" or "Project".
+    STRICT RULES:
+    1. QUANTITY: Generate 5-7 questions per task. Do not output less.
+    2. DOMAIN LOGIC:
+       - AI/Web/Dev -> Platform: "Project" or "Implementation". (NO fake LeetCode IDs).
+       - DSA -> Platform: "LeetCode" (Real IDs).
+    3. DIFFICULTY: Mix Easy, Medium, Hard.
     
-    Ensure the JSON is valid and parsable.
+    Ensure the JSON is valid.
     `;
     
     const completion = await groq.chat.completions.create({
@@ -697,7 +703,7 @@ app.get('/api/jobs', async (req, res) => {
   }
 });
 
-// ========== AI INTERVIEW ==========
+// ========== AI INTERVIEW (NO DATABASE STORAGE) ==========
 app.post('/api/interview-practice', async (req, res) => {
   try {
     const { language } = req.body;
@@ -757,8 +763,6 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log('\n' + '='.repeat(60));
-  console.log(`✅ SERVER RUNNING ON PORT ${PORT}`);
-  console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`🔥 Features: Profiles, Contests, Aptitude, Roadmaps, Jobs, AI Interview`);
-  console.log('='.repeat(60) + '\n');
+  console.log(`SERVER RUNNING ON PORT ${PORT}`);
+  
 });
