@@ -1,5 +1,5 @@
 // server.js - COMPLETE PRODUCTION BACKEND
-// Merges: Contests, Profiles, Aptitude, Roadmaps, Jobs
+// Features: Robust Contests (CF, LC, AtCoder), High-Vol Roadmaps, Profiles, Jobs
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
@@ -10,7 +10,7 @@ require('dotenv').config();
 
 const app = express();
 
-// CORS
+// --- CONFIGURATION ---
 app.use(cors({
   origin: process.env.FRONTEND_URL || '*',
   methods: ['GET', 'POST', 'DELETE', 'PUT', 'PATCH'],
@@ -18,14 +18,14 @@ app.use(cors({
 }));
 app.use(express.json({ limit: '10mb' }));
 
-// Health
+// --- HEALTH CHECK ---
 app.get('/health', (req, res) => res.json({ 
   status: 'ok', 
   timestamp: new Date().toISOString(),
-  version: '4.2.0' // Version bumped for "More Questions" update
+  version: '4.3.0' 
 }));
 
-// Firebase Init
+// --- FIREBASE INIT ---
 if (!admin.apps.length) {
   try {
     const serviceAccount = process.env.FIREBASE_KEY 
@@ -41,28 +41,32 @@ if (!admin.apps.length) {
 }
 const db = admin.firestore();
 
-// Groq Init
+// --- GROQ INIT ---
 if (!process.env.GROQ_API_KEY) {
   console.error('[Groq] ❌ Missing API Key');
   process.exit(1);
 }
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
-// Config
+// --- CONSTANTS ---
 const CONFIG = {
-  CONTEST_CACHE_TTL: 2 * 60 * 60 * 1000,
-  REQUEST_TIMEOUT: 12000,
-  USER_AGENT: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+  CONTEST_CACHE_TTL: 2 * 60 * 60 * 1000, // 2 Hours
+  REQUEST_TIMEOUT: 15000,                // 15 Seconds
+  USER_AGENT: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
   CONTEST_LOOKAHEAD_DAYS: 90
 };
 
-// ========== CONTESTS ==========
+// ============================================================================
+//  SECTION 1: ROBUST CONTEST FETCHING
+// ============================================================================
+
 const isContestInTimeframe = (startTimeSeconds) => {
   const now = Math.floor(Date.now() / 1000);
   const max = now + (CONFIG.CONTEST_LOOKAHEAD_DAYS * 24 * 60 * 60);
   return startTimeSeconds > now && startTimeSeconds <= max;
 };
 
+// 1. CODEFORCES (Direct API)
 async function fetchCodeforcesContests() {
   try {
     const res = await axios.get('https://codeforces.com/api/contest.list', {
@@ -81,9 +85,13 @@ async function fetchCodeforcesContests() {
         duration: c.durationSeconds.toString(),
         url: `https://codeforces.com/contest/${c.id}`
       }));
-  } catch (e) { return []; }
+  } catch (e) { 
+    console.error('[Contests] Codeforces fetch failed:', e.message);
+    return []; 
+  }
 }
 
+// 2. LEETCODE (Direct GraphQL)
 async function fetchLeetCodeContests() {
   try {
     const query = `query { allContests { title titleSlug startTime duration } }`;
@@ -105,9 +113,67 @@ async function fetchLeetCodeContests() {
         duration: c.duration.toString(),
         url: `https://leetcode.com/contest/${c.titleSlug}/`
       }));
-  } catch (e) { return []; }
+  } catch (e) { 
+    console.error('[Contests] LeetCode fetch failed:', e.message);
+    return []; 
+  }
 }
 
+// 3. ATCODER (Direct Scraper with Cheerio)
+async function fetchAtCoderContests() {
+  try {
+    // AtCoder blocks simple requests sometimes, so we use a real-looking header
+    const { data } = await axios.get('https://atcoder.jp/contests/', {
+      headers: { 'User-Agent': CONFIG.USER_AGENT },
+      timeout: CONFIG.REQUEST_TIMEOUT
+    });
+    
+    const $ = cheerio.load(data);
+    const contests = [];
+
+    // Select the "Upcoming Contests" table
+    $('#contest-table-upcoming tbody tr').each((i, el) => {
+      const tds = $(el).find('td');
+      if (tds.length < 2) return;
+
+      // 1. Parse Time
+      const timeStr = $(tds[0]).find('time').text() || $(tds[0]).text(); 
+      // AtCoder usually puts ISO format in <time> tag or plain text like "2023-10-21 21:00:00+0900"
+      // The Date() constructor handles AtCoder's format well.
+      const startTime = new Date(timeStr);
+      
+      // 2. Parse Name & URL
+      const nameAnchor = $(tds[1]).find('a');
+      const name = nameAnchor.text();
+      const path = nameAnchor.attr('href');
+      const url = `https://atcoder.jp${path}`;
+      
+      // 3. Parse Duration (Format: HH:mm)
+      const durationStr = $(tds[2]).text().trim(); 
+      const [h, m] = durationStr.split(':').map(Number);
+      const durationSec = (h * 3600) + (m * 60);
+      const endTime = new Date(startTime.getTime() + durationSec * 1000);
+
+      // Filter by timeframe
+      if (isContestInTimeframe(startTime.getTime() / 1000)) {
+        contests.push({
+          site: 'AtCoder',
+          name,
+          start_time: startTime.toISOString(),
+          end_time: endTime.toISOString(),
+          duration: durationSec.toString(),
+          url
+        });
+      }
+    });
+    return contests;
+  } catch (e) {
+    console.error('[Contests] AtCoder scrape failed:', e.message);
+    return [];
+  }
+}
+
+// 4. KONTESTS (Aggregator - Backup for others)
 async function fetchKontestsContests() {
   try {
     const res = await axios.get('https://kontests.net/api/v1/all', {
@@ -120,6 +186,10 @@ async function fetchKontestsContests() {
     
     return (res.data || [])
       .filter(c => {
+        const site = c.site || '';
+        // Skip platforms we now fetch directly to avoid duplicates
+        if (site.includes('CodeForces') || site.includes('LeetCode') || site.includes('AtCoder')) return false;
+        
         try {
           const start = new Date(c.start_time);
           const end = new Date(c.end_time);
@@ -127,29 +197,38 @@ async function fetchKontestsContests() {
         } catch { return false; }
       })
       .map(c => ({
-        site: c.site || 'Unknown',
-        name: c.name || 'Contest',
+        site: c.site || 'Other',
+        name: c.name,
         start_time: c.start_time,
         end_time: c.end_time,
-        duration: c.duration || '7200',
-        url: c.url || '#'
+        duration: c.duration,
+        url: c.url
       }));
-  } catch (e) { return []; }
+  } catch (e) { 
+    // This API is flaky, so we log it but don't crash
+    console.error('[Contests] Kontests API failed (Backup):', e.message);
+    return []; 
+  }
 }
 
 async function fetchAllContests() {
-  const [cf, lc, other] = await Promise.allSettled([
+  // Execute all fetchers in parallel. 'allSettled' ensures one failure doesn't stop others.
+  const [cf, lc, ac, other] = await Promise.allSettled([
     fetchCodeforcesContests(),
     fetchLeetCodeContests(),
+    fetchAtCoderContests(),
     fetchKontestsContests()
   ]);
   
+  // Combine results
   const all = [
     ...(cf.status === 'fulfilled' ? cf.value : []),
     ...(lc.status === 'fulfilled' ? lc.value : []),
+    ...(ac.status === 'fulfilled' ? ac.value : []),
     ...(other.status === 'fulfilled' ? other.value : [])
   ];
   
+  // Deduplicate based on Name + Time
   const unique = [];
   const seen = new Set();
   all.forEach(c => {
@@ -189,7 +268,10 @@ async function saveCachedContests(contests) {
   } catch { return false; }
 }
 
-// ========== PROFILES ==========
+// ============================================================================
+//  SECTION 2: PROFILES
+// ============================================================================
+
 async function fetchLeetCodeData(username) {
   try {
     const query = `
@@ -239,7 +321,6 @@ async function fetchLeetCodeData(username) {
         });
     }
     
-    // Streak calculation
     let streak = 0;
     if (data.matchedUser.userCalendar?.submissionCalendar) {
       try {
@@ -343,7 +424,10 @@ async function aggregateAllPlatforms(userProfiles) {
   };
 }
 
-// ========== APTITUDE ==========
+// ============================================================================
+//  SECTION 3: APTITUDE
+// ============================================================================
+
 async function generateAptitudeTest(userId, difficulty = 'medium') {
   try {
     const prompt = `Create General Aptitude Test (20 Qs, 4 categories, 5 each) JSON only:
@@ -405,7 +489,10 @@ async function saveTestResult(userId, stats) {
   }
 }
 
-// ========== ROADMAP (UPDATED: High Quantity Logic) ==========
+// ============================================================================
+//  SECTION 4: ROADMAP (HIGH QUANTITY & DOMAIN AWARE)
+// ============================================================================
+
 const ROADMAP_PROMPT = `You are an expert technical mentor. Generate a structured learning roadmap based on the user's specific request.
 
 CRITICAL INSTRUCTIONS:
@@ -449,7 +536,10 @@ JSON STRUCTURE:
   ]
 }`;
 
-// ========== JOBS ==========
+// ============================================================================
+//  SECTION 5: JOBS
+// ============================================================================
+
 const normalizeType = (type) => {
   if (!type) return 'Full-time';
   const t = type.toLowerCase();
@@ -514,9 +604,11 @@ async function fetchJobs() {
   return all.sort(() => Math.random() - 0.5);
 }
 
-// ========== ROUTES ==========
+// ============================================================================
+//  SECTION 6: ROUTES
+// ============================================================================
 
-// Profile
+// --- Profile Routes ---
 app.post('/api/update-coding-profile', async (req, res) => {
   try {
     const { userId, userProfiles } = req.body;
@@ -549,15 +641,17 @@ app.get('/api/coding-profile/:userId', async (req, res) => {
   }
 });
 
-// Contests
+// --- Contest Routes ---
 app.get('/api/contests', async (req, res) => {
   try {
     const cached = await getCachedContests();
     
+    // Serve from cache if fresh
     if (cached && !cached.isExpired && cached.contests.length > 0) {
       return res.json({ contests: cached.contests, source: 'cache' });
     }
     
+    // Fetch fresh
     const fresh = await fetchAllContests();
     
     if (fresh && fresh.length > 0) {
@@ -565,6 +659,7 @@ app.get('/api/contests', async (req, res) => {
       return res.json({ contests: fresh, source: 'api' });
     }
     
+    // Serve stale cache if API failed
     if (cached && cached.contests.length > 0) {
       return res.json({ contests: cached.contests, source: 'cache_stale' });
     }
@@ -575,7 +670,7 @@ app.get('/api/contests', async (req, res) => {
   }
 });
 
-// Aptitude
+// --- Aptitude Routes ---
 app.post('/api/generate-aptitude-test', async (req, res) => {
   try {
     const { userId, difficulty } = req.body;
@@ -610,13 +705,12 @@ app.get('/api/aptitude-history/:userId', async (req, res) => {
   }
 });
 
-// Roadmap (UPDATED ROUTE: High Quantity + Domain Aware)
+// --- Roadmap Routes ---
 app.post('/api/generate-roadmap', async (req, res) => {
   try {
     const { userId, userContext, skillSnapshot } = req.body;
     if (!userId) return res.status(400).json({ error: 'Missing userId' });
     
-    // UPDATED USER PROMPT: STRICTLY ENFORCES 5-7 QUESTIONS
     const userPrompt = `
     USER GOAL/CONTEXT: "${userContext || 'Beginner'}"
     USER STATS: ${JSON.stringify(skillSnapshot || {})}
@@ -645,8 +739,6 @@ app.post('/api/generate-roadmap', async (req, res) => {
     });
     
     let rawResponse = completion.choices[0].message.content;
-    
-    // Safety: Remove markdown if present to prevent parsing errors
     const firstOpen = rawResponse.indexOf('{');
     const lastClose = rawResponse.lastIndexOf('}');
     if (firstOpen !== -1 && lastClose !== -1) {
@@ -693,7 +785,7 @@ app.post('/api/roadmap/:userId/progress', async (req, res) => {
   }
 });
 
-// Jobs
+// --- Jobs Route ---
 app.get('/api/jobs', async (req, res) => {
   try {
     const jobs = await fetchJobs();
@@ -703,16 +795,14 @@ app.get('/api/jobs', async (req, res) => {
   }
 });
 
-// ========== AI INTERVIEW (NO DATABASE STORAGE) ==========
+// --- AI Interview Route ---
 app.post('/api/interview-practice', async (req, res) => {
   try {
     const { language } = req.body;
-    
     if (!language || typeof language !== 'string') {
         return res.status(400).json({ error: 'Language is required' });
     }
 
-    // UPDATED PROMPT: Forces AI to use exact text matches
     const prompt = `Generate 20 multiple-choice interview questions for "${language}".
     Difficulty: Mixed (Junior to Senior).
     CRITICAL: Output STRICT JSON only. No markdown.
@@ -750,19 +840,18 @@ app.post('/api/interview-practice', async (req, res) => {
   }
 });
 
-// 404 - Must be AFTER all routes
+// --- FINAL MIDDLEWARE ---
 app.use((req, res) => res.status(404).json({ error: 'Not Found' }));
 
-// Error - Must be AFTER 404
 app.use((err, req, res, next) => {
   console.error('[Error]:', err);
   res.status(500).json({ error: 'Internal Error' });
 });
 
-// Start
+// --- START SERVER ---
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log('\n' + '='.repeat(60));
-  console.log(`SERVER RUNNING ON PORT ${PORT}`);
-  
+  console.log(` SERVER RUNNING ON PORT ${PORT}`);
+ 
 });
