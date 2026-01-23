@@ -1,5 +1,4 @@
-// server.js - COMPLETE PRODUCTION BACKEND
-// Merges: Contests, Profiles, Aptitude, Roadmaps, Jobs
+
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
@@ -10,7 +9,6 @@ require('dotenv').config();
 
 const app = express();
 
-// CORS
 app.use(cors({
   origin: process.env.FRONTEND_URL || '*',
   methods: ['GET', 'POST', 'DELETE', 'PUT', 'PATCH'],
@@ -18,14 +16,12 @@ app.use(cors({
 }));
 app.use(express.json({ limit: '10mb' }));
 
-// Health
 app.get('/health', (req, res) => res.json({ 
   status: 'ok', 
   timestamp: new Date().toISOString(),
   version: '4.0.0'
 }));
 
-// Firebase Init
 if (!admin.apps.length) {
   try {
     const serviceAccount = process.env.FIREBASE_KEY 
@@ -41,14 +37,12 @@ if (!admin.apps.length) {
 }
 const db = admin.firestore();
 
-// Groq Init
 if (!process.env.GROQ_API_KEY) {
   console.error('[Groq] ❌ Missing API Key');
   process.exit(1);
 }
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
-// Config
 const CONFIG = {
   CONTEST_CACHE_TTL: 2 * 60 * 60 * 1000,
   REQUEST_TIMEOUT: 12000,
@@ -56,7 +50,7 @@ const CONFIG = {
   CONTEST_LOOKAHEAD_DAYS: 90
 };
 
-// ========== CONTESTS ==========
+//  CONTESTS 
 const isContestInTimeframe = (startTimeSeconds) => {
   const now = Math.floor(Date.now() / 1000);
   const max = now + (CONFIG.CONTEST_LOOKAHEAD_DAYS * 24 * 60 * 60);
@@ -189,7 +183,7 @@ async function saveCachedContests(contests) {
   } catch { return false; }
 }
 
-// ========== PROFILES ==========
+//  PROFILES 
 async function fetchLeetCodeData(username) {
   try {
     const query = `
@@ -343,7 +337,7 @@ async function aggregateAllPlatforms(userProfiles) {
   };
 }
 
-// ========== APTITUDE ==========
+//  APTITUDE 
 async function generateAptitudeTest(userId, difficulty = 'medium') {
   try {
     const prompt = `Create General Aptitude Test (20 Qs, 4 categories, 5 each) JSON only:
@@ -405,48 +399,53 @@ async function saveTestResult(userId, stats) {
   }
 }
 
-// ========== ROADMAP ==========
-const ROADMAP_PROMPT = `You are an elite coding mentor. Create a structured, strict level-wise roadmap.
-OUTPUT STRICT JSON ONLY. No markdown. No conversational text.
+// ========== ROADMAP
+// This is the specific section updated to fix AI hallucinations
+const ROADMAP_PROMPT = `You are an expert technical mentor. Generate a structured learning roadmap based on the user's specific request.
 
-STRUCTURE RULES:
-1. "phases": Must progress strictly: Fundamentals -> Deep Dive -> Advanced/Mastery.
-2. "tasks": Must be concept-focused (e.g., "Sliding Window", "Graph BFS").
-3. "practice_questions": 
-   - MUST be real, existing problems.
-   - search across platforms: LeetCode, CodeForces, GeeksForGeeks, HackerRank, AtCoder, SPOJ.
-   - Do NOT generate fake IDs like "1.1.1" or "LeetCode #1" unless it is the actual ID.
-   - If the exact ID/Number is not applicable (e.g. GFG), leave "problem_id" as an empty string "".
-   - "question_description": valid 1-2 sentence summary of what the problem asks.
+CRITICAL INSTRUCTIONS:
+1. OUTPUT FORMAT: STRICT JSON only. No Markdown.
+2. DOMAIN DETECTION:
+   - IF DSA/ALGO: Use "LeetCode" or "CodeForces" as the platform. Provide REAL problem IDs (e.g., "1", "206").
+   - IF AI/ML/WEB/DEV: Do NOT use LeetCode IDs for concepts like "Neural Networks" or "React Props". 
+     - Instead, set "platform" to "Project", "Kaggle", "Implementation", or "Concept".
+     - Set "problem_id" to a short slug (e.g., "proj-mnist", "impl-vector").
+     - "question_title" should be a specific task (e.g., "Build a MNIST Classifier", "Implement Vector Class").
 
-JSON SCHEMA:
+JSON STRUCTURE:
 {
-  "roadmap_title": "str",
-  "user_level": "str",
-  "strategy_summary": "str",
-  "phases": [{
-    "phase_number": 1,
-    "phase_title": "str",
-    "duration_days": 5,
-    "focus_reason": "str",
-    "tasks": [{
-      "concept_name": "str",
-      "priority": "High", // High, Medium, Low
-      "estimated_time_minutes": 90,
-      "difficulty": "Medium",
-      "why_this_matters": "str",
-      "practice_questions": [{
-        "question_title": "str",
-        "problem_id": "str", // e.g., "1", "4A", or "" if none
-        "platform": "LeetCode", // or CodeForces, GFG, etc.
-        "difficulty": "Easy",
-        "question_description": "Short summary of the problem statement."
-      }]
-    }]
-  }]
+  "roadmap_title": "string",
+  "user_level": "string",
+  "strategy_summary": "string",
+  "phases": [
+    {
+      "phase_number": 1,
+      "phase_title": "string",
+      "duration_days": 5,
+      "focus_reason": "string",
+      "tasks": [
+        {
+          "concept_name": "string",
+          "priority": "High",
+          "estimated_time_minutes": 90,
+          "difficulty": "Medium",
+          "why_this_matters": "string",
+          "practice_questions": [
+             { 
+               "question_title": "string", 
+               "problem_id": "string", 
+               "platform": "string", 
+               "difficulty": "Easy",
+               "question_description": "string"
+             }
+          ]
+        }
+      ]
+    }
+  ]
 }`;
 
-// ========== JOBS ==========
+//  JOBS 
 const normalizeType = (type) => {
   if (!type) return 'Full-time';
   const t = type.toLowerCase();
@@ -511,7 +510,7 @@ async function fetchJobs() {
   return all.sort(() => Math.random() - 0.5);
 }
 
-// ========== ROUTES ==========
+// ROUTES -----------------------
 
 // Profile
 app.post('/api/update-coding-profile', async (req, res) => {
@@ -607,23 +606,25 @@ app.get('/api/aptitude-history/:userId', async (req, res) => {
   }
 });
 
-// Roadmap
+// Roadmap (UPDATED ROUTE: Fixes LeetCode ID hallucination)
 app.post('/api/generate-roadmap', async (req, res) => {
   try {
     const { userId, userContext, skillSnapshot } = req.body;
     if (!userId) return res.status(400).json({ error: 'Missing userId' });
     
-    // UPDATED USER PROMPT: Enforces level-wise generation
+    // UPDATED USER PROMPT: Guides the AI based on domain
     const userPrompt = `
-    USER CONTEXT: ${userContext || 'Beginner'}.
-    CURRENT SKILLS: ${JSON.stringify(skillSnapshot || {})}
+    USER GOAL/CONTEXT: "${userContext || 'Beginner'}"
+    USER STATS: ${JSON.stringify(skillSnapshot || {})}
     
-    REQUIREMENTS:
-    1. Create 3 PHASES.
-    2. Each Task must have 4-6 specific questions.
-    3. Questions must be SORTED by difficulty inside the task (Easy -> Medium -> Hard).
-    4. Provide a "question_description" for every question.
-    5. Use mixed platforms (LeetCode, CodeForces, etc.) where best applicable.
+    TASK: Create a 3-Phase Roadmap tailored strictly to the user's goal.
+    
+    GUIDELINES:
+    1. If the user asks for AI/ML: Start with Math/Python -> ML Algorithms -> Deep Learning. Do NOT suggest LeetCode for "Linear Algebra". Suggest "Implementation" tasks.
+    2. If the user asks for DSA: Focus on Patterns (Sliding Window, etc.) and provide LeetCode IDs.
+    3. If the user asks for Web Dev: Focus on building components/APIs. Platform should be "VS Code" or "Project".
+    
+    Ensure the JSON is valid and parsable.
     `;
     
     const completion = await groq.chat.completions.create({
@@ -632,12 +633,21 @@ app.post('/api/generate-roadmap', async (req, res) => {
         { role: 'user', content: userPrompt }
       ],
       model: 'llama-3.1-8b-instant', 
-      temperature: 0.2, // Lowered temperature to reduce hallucination of fake IDs
+      temperature: 0.3,
       max_tokens: 8000,
       response_format: { type: 'json_object' }
     });
     
-    const roadmap = JSON.parse(completion.choices[0].message.content);
+    let rawResponse = completion.choices[0].message.content;
+    
+    // Safety: Remove markdown if present to prevent parsing errors
+    const firstOpen = rawResponse.indexOf('{');
+    const lastClose = rawResponse.lastIndexOf('}');
+    if (firstOpen !== -1 && lastClose !== -1) {
+        rawResponse = rawResponse.substring(firstOpen, lastClose + 1);
+    }
+
+    const roadmap = JSON.parse(rawResponse);
     const id = `roadmap_${Date.now()}`;
     
     await db.collection('UserRoadmaps').doc(userId).collection('roadmaps').doc(id).set({
@@ -649,6 +659,7 @@ app.post('/api/generate-roadmap', async (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
+
 app.delete('/api/roadmap/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
@@ -686,8 +697,7 @@ app.get('/api/jobs', async (req, res) => {
   }
 });
 
-// ========== AI INTERVIEW (NO DATABASE STORAGE) ==========
-// THIS IS THE NEW LOGIC - INSERTED CORRECTLY BEFORE 404
+// ========== AI INTERVIEW ==========
 app.post('/api/interview-practice', async (req, res) => {
   try {
     const { language } = req.body;
@@ -733,6 +743,7 @@ app.post('/api/interview-practice', async (req, res) => {
     res.status(500).json({ error: 'Failed to generate questions' });
   }
 });
+
 // 404 - Must be AFTER all routes
 app.use((req, res) => res.status(404).json({ error: 'Not Found' }));
 
@@ -751,6 +762,3 @@ app.listen(PORT, () => {
   console.log(`🔥 Features: Profiles, Contests, Aptitude, Roadmaps, Jobs, AI Interview`);
   console.log('='.repeat(60) + '\n');
 });
-
-
-
