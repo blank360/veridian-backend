@@ -360,7 +360,124 @@ async function fetchLeetCodeData(username) {
     };
   } catch { return null; }
 }
+// --- NEW SCRAPERS FOR MISSING PLATFORMS ---
 
+// 1. CODECHEF (Scraping)
+async function fetchCodechefData(username) {
+  try {
+    const { data } = await axios.get(`https://www.codechef.com/users/${username}`, {
+      headers: { 'User-Agent': CONFIG.USER_AGENT },
+      timeout: CONFIG.REQUEST_TIMEOUT
+    });
+    
+    const $ = cheerio.load(data);
+    const rating = parseInt($('.rating-number').text().replace(/\D/g, '')) || 0;
+    const stars = $('.rating-star').text().trim() || 'Unrated';
+    const globalRank = parseInt($('.rating-ranks ul li:first-child a strong').text()) || 0;
+    
+    // CodeChef structure makes extracting exact "Total Solved" hard without deep scraping.
+    // We usually extract "Fully Solved" from the practice section if available, 
+    // but for speed, we often use the visual rating as the primary metric.
+    
+    return {
+      platform: 'CodeChef',
+      username,
+      rating,
+      stars,
+      globalRank,
+      lastUpdated: new Date().toISOString()
+    };
+  } catch (e) {
+    console.error(`[Profile] CodeChef failed for ${username}: ${e.message}`);
+    return null;
+  }
+}
+
+// 2. GEEKSFORGEEKS (Scraping)
+async function fetchGeeksForGeeksData(username) {
+  try {
+    const { data } = await axios.get(`https://auth.geeksforgeeks.org/user/${username}/practice/`, {
+      headers: { 'User-Agent': CONFIG.USER_AGENT },
+      timeout: CONFIG.REQUEST_TIMEOUT
+    });
+    
+    const $ = cheerio.load(data);
+    
+    // GFG classes change often. We look for text-based anchors.
+    let totalSolved = 0;
+    let score = 0;
+    
+    // Locate the "Problems Solved" text and get the next element or the number inside
+    $('div, span, h6').each((i, el) => {
+      const text = $(el).text().trim();
+      if (text.includes('Problem Solved') || text.includes('Problems Solved')) {
+         // Usually the number is in a sibling or parent depending on GFG's current UI
+         const num = $(el).next().text() || $(el).parent().find('.scoreCard_head_card_left--score__pC6ZA').text();
+         totalSolved = parseInt(num) || totalSolved;
+      }
+      if (text.includes('Coding Score')) {
+         const num = $(el).next().text() || $(el).parent().find('.scoreCard_head_card_left--score__pC6ZA').text();
+         score = parseInt(num) || score;
+      }
+    });
+
+    // Fallback scraping for current GFG Layout (Material UI)
+    if (totalSolved === 0) {
+        const rawText = $.text();
+        const solvedMatch = rawText.match(/Problems Solved:\s*(\d+)/);
+        if (solvedMatch) totalSolved = parseInt(solvedMatch[1]);
+    }
+
+    return {
+      platform: 'GeeksForGeeks',
+      username,
+      totalSolved,
+      codingScore: score,
+      lastUpdated: new Date().toISOString()
+    };
+  } catch (e) {
+    console.error(`[Profile] GFG failed for ${username}: ${e.message}`);
+    return null;
+  }
+}
+
+// 3. ATCODER PROFILES (Scraping - Distinct from Contests)
+async function fetchAtCoderProfile(username) {
+  try {
+    const { data } = await axios.get(`https://atcoder.jp/users/${username}`, {
+      headers: { 'User-Agent': CONFIG.USER_AGENT },
+      timeout: CONFIG.REQUEST_TIMEOUT
+    });
+    
+    const $ = cheerio.load(data);
+    let rating = 0;
+    let rank = 0;
+    
+    // Parse the table
+    $('table.dl-table tbody tr').each((i, el) => {
+      const header = $(el).find('th').text().trim();
+      const value = $(el).find('td').text().trim();
+      
+      if (header === 'Rating') {
+        rating = parseInt(value.split(' ')[0]);
+      }
+      if (header === 'Rank') {
+        rank = parseInt(value);
+      }
+    });
+
+    return {
+      platform: 'AtCoder',
+      username,
+      rating,
+      rank,
+      lastUpdated: new Date().toISOString()
+    };
+  } catch (e) {
+    console.error(`[Profile] AtCoder failed for ${username}: ${e.message}`);
+    return null;
+  }
+}
 async function fetchCodeforcesData(username) {
   try {
     const [info, status] = await Promise.all([
@@ -396,14 +513,22 @@ async function fetchCodeforcesData(username) {
 }
 
 async function aggregateAllPlatforms(userProfiles) {
+  // Execute all fetches in parallel
   const results = await Promise.all([
     userProfiles.leetcode?.trim() ? fetchLeetCodeData(userProfiles.leetcode) : null,
-    userProfiles.codeforces?.trim() ? fetchCodeforcesData(userProfiles.codeforces) : null
+    userProfiles.codeforces?.trim() ? fetchCodeforcesData(userProfiles.codeforces) : null,
+    // --- ADDED THESE LINES ---
+    userProfiles.codechef?.trim() ? fetchCodechefData(userProfiles.codechef) : null,
+    userProfiles.geeksforgeeks?.trim() ? fetchGeeksForGeeksData(userProfiles.geeksforgeeks) : null,
+    userProfiles.atcoder?.trim() ? fetchAtCoderProfile(userProfiles.atcoder) : null
   ]);
   
   const valid = results.filter(r => r);
+  
+  // Sum up total solved (Note: AtCoder/CodeChef often don't provide easy "Total Solved" counts in simple scrape)
   const totalSolved = valid.reduce((sum, r) => sum + (r.totalSolved || 0), 0);
   
+  // Aggregate Topics
   const allTopics = {};
   valid.forEach(r => {
     if (r.topics) {
@@ -855,3 +980,4 @@ app.listen(PORT, () => {
   console.log(` SERVER RUNNING ON PORT ${PORT}`);
  
 });
+
