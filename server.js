@@ -21,7 +21,7 @@ app.use(express.json({ limit: '10mb' }));
 app.get('/health', (req, res) => res.json({ 
   status: 'ok', 
   timestamp: new Date().toISOString(),
-  version: '4.4.0' // Bumped version for Roadmap Update
+  version: '4.5.0' // Bumped for Quantity Fix
 }));
 
 // --- FIREBASE INIT ---
@@ -49,8 +49,8 @@ const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
 // --- CONSTANTS ---
 const CONFIG = {
-  CONTEST_CACHE_TTL: 2 * 60 * 60 * 1000, // 2 Hours
-  REQUEST_TIMEOUT: 15000,                // 15 Seconds
+  CONTEST_CACHE_TTL: 2 * 60 * 60 * 1000, 
+  REQUEST_TIMEOUT: 15000,                
   USER_AGENT: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
   CONTEST_LOOKAHEAD_DAYS: 90
 };
@@ -65,7 +65,7 @@ const isContestInTimeframe = (startTimeSeconds) => {
   return startTimeSeconds > now && startTimeSeconds <= max;
 };
 
-// 1. CODEFORCES (Direct API)
+// 1. CODEFORCES
 async function fetchCodeforcesContests() {
   try {
     const res = await axios.get('https://codeforces.com/api/contest.list', {
@@ -90,7 +90,7 @@ async function fetchCodeforcesContests() {
   }
 }
 
-// 2. LEETCODE (Direct GraphQL)
+// 2. LEETCODE
 async function fetchLeetCodeContests() {
   try {
     const query = `query { allContests { title titleSlug startTime duration } }`;
@@ -118,7 +118,7 @@ async function fetchLeetCodeContests() {
   }
 }
 
-// 3. ATCODER (Direct Scraper with Cheerio)
+// 3. ATCODER
 async function fetchAtCoderContests() {
   try {
     const { data } = await axios.get('https://atcoder.jp/contests/', {
@@ -164,7 +164,7 @@ async function fetchAtCoderContests() {
   }
 }
 
-// 4. KONTESTS (Aggregator - Backup)
+// 4. KONTESTS
 async function fetchKontestsContests() {
   try {
     const res = await axios.get('https://kontests.net/api/v1/all', {
@@ -179,7 +179,6 @@ async function fetchKontestsContests() {
       .filter(c => {
         const site = c.site || '';
         if (site.includes('CodeForces') || site.includes('LeetCode') || site.includes('AtCoder')) return false;
-        
         try {
           const start = new Date(c.start_time);
           const end = new Date(c.end_time);
@@ -195,7 +194,6 @@ async function fetchKontestsContests() {
         url: c.url
       }));
   } catch (e) { 
-    console.error('[Contests] Kontests API failed (Backup):', e.message);
     return []; 
   }
 }
@@ -368,7 +366,6 @@ async function fetchCodechefData(username) {
       lastUpdated: new Date().toISOString()
     };
   } catch (e) {
-    console.error(`[Profile] CodeChef failed for ${username}: ${e.message}`);
     return null;
   }
 }
@@ -410,7 +407,6 @@ async function fetchGeeksForGeeksData(username) {
       lastUpdated: new Date().toISOString()
     };
   } catch (e) {
-    console.error(`[Profile] GFG failed for ${username}: ${e.message}`);
     return null;
   }
 }
@@ -446,7 +442,6 @@ async function fetchAtCoderProfile(username) {
       lastUpdated: new Date().toISOString()
     };
   } catch (e) {
-    console.error(`[Profile] AtCoder failed for ${username}: ${e.message}`);
     return null;
   }
 }
@@ -583,13 +578,16 @@ async function saveTestResult(userId, stats) {
 }
 
 // ============================================================================
-//  SECTION 4: ROADMAP (HIGH QUANTITY & DOMAIN AWARE)
+//  SECTION 4: ROADMAP (HIGH QUALITY & HIGH QUANTITY)
 // ============================================================================
 
-// --- REVISED PROMPT FOR CURRICULUM VS DSA ---
+// --- REVISED PROMPT WITH STRICT QUANTITY CONTROLS ---
 const ROADMAP_PROMPT = `You are a Senior Technical Curriculum Developer. Generate a structured learning roadmap.
 
 CRITICAL INSTRUCTION: DETECT THE DOMAIN (DSA vs DEVELOPMENT)
+
+--- GLOBAL RULE: QUANTITY ---
+Each Task MUST contain 5 to 8 items/questions. Do NOT generate fewer than 5.
 
 --- MODE A: DSA & COMPETITIVE PROGRAMMING ---
 (Triggered by: "Arrays", "DP", "Trees", "LeetCode", "Logic")
@@ -605,10 +603,13 @@ CRITICAL INSTRUCTION: DETECT THE DOMAIN (DSA vs DEVELOPMENT)
 * **Structure per Task:**
     1.  **Concept:** A topic the user must read about (Platform: "Concept").
     2.  **Action:** A small code task to verify knowledge (Platform: "Task").
+    3.  **Project:** A mini implementation (Platform: "Project").
 * **Example Output for Dev:**
     - Item 1: "Learn React State vs Props" (Platform: "Concept")
     - Item 2: "Build a Counter Component" (Platform: "Task")
     - Item 3: "Understand useEffect Lifecycle" (Platform: "Concept")
+    - Item 4: "Fetch Data from API" (Platform: "Task")
+    - Item 5: "Build a Todo List" (Platform: "Project")
 
 JSON STRUCTURE (Strictly follow this):
 {
@@ -808,7 +809,7 @@ app.get('/api/aptitude-history/:userId', async (req, res) => {
   }
 });
 
-// --- Roadmap Routes (UPDATED) ---
+// --- Roadmap Routes (UPDATED WITH QUANTITY) ---
 app.post('/api/generate-roadmap', async (req, res) => {
   try {
     const { userId, userContext, skillSnapshot } = req.body;
@@ -821,13 +822,12 @@ app.post('/api/generate-roadmap', async (req, res) => {
     
     INSTRUCTIONS:
     1. Create a 3-Phase Roadmap.
-    2. **IF DEVELOPMENT (Web/App/ML):**
-       - DO NOT just list "Build a Netflix Clone". That is too big.
-       - Break it down: "Learn Flexbox" -> "Layout Header" -> "Fetch API" -> "Display Data".
-       - Treat "practice_questions" as "Learning Steps".
+    2. **QUANTITY:** MINIMUM 5-8 QUESTIONS/STEPS PER TASK. (Mandatory).
+    3. **IF DEVELOPMENT (Web/App/ML):**
+       - Break it down: Concept -> Task -> Implementation.
        - Use "Platform" field to indicate "Concept", "Doc Read", or "Code Task".
-    3. **IF DSA:**
-       - Provide standard LeetCode/CodeForces problems.
+    4. **IF DSA:**
+       - Provide standard LeetCode/CodeForces problems (5-8 per task).
     
     Output STRICT JSON.
     `;
