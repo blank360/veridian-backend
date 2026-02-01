@@ -1,5 +1,4 @@
 // server.js - COMPLETE PRODUCTION BACKEND
-// Features: Robust Contests (CF, LC, AtCoder), High-Vol Roadmaps, Profiles, Jobs
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
@@ -22,7 +21,7 @@ app.use(express.json({ limit: '10mb' }));
 app.get('/health', (req, res) => res.json({ 
   status: 'ok', 
   timestamp: new Date().toISOString(),
-  version: '4.3.0' 
+  version: '4.4.0' // Bumped version for Roadmap Update
 }));
 
 // --- FIREBASE INIT ---
@@ -122,7 +121,6 @@ async function fetchLeetCodeContests() {
 // 3. ATCODER (Direct Scraper with Cheerio)
 async function fetchAtCoderContests() {
   try {
-    // AtCoder blocks simple requests sometimes, so we use a real-looking header
     const { data } = await axios.get('https://atcoder.jp/contests/', {
       headers: { 'User-Agent': CONFIG.USER_AGENT },
       timeout: CONFIG.REQUEST_TIMEOUT
@@ -131,30 +129,23 @@ async function fetchAtCoderContests() {
     const $ = cheerio.load(data);
     const contests = [];
 
-    // Select the "Upcoming Contests" table
     $('#contest-table-upcoming tbody tr').each((i, el) => {
       const tds = $(el).find('td');
       if (tds.length < 2) return;
 
-      // 1. Parse Time
       const timeStr = $(tds[0]).find('time').text() || $(tds[0]).text(); 
-      // AtCoder usually puts ISO format in <time> tag or plain text like "2023-10-21 21:00:00+0900"
-      // The Date() constructor handles AtCoder's format well.
       const startTime = new Date(timeStr);
       
-      // 2. Parse Name & URL
       const nameAnchor = $(tds[1]).find('a');
       const name = nameAnchor.text();
       const path = nameAnchor.attr('href');
       const url = `https://atcoder.jp${path}`;
       
-      // 3. Parse Duration (Format: HH:mm)
       const durationStr = $(tds[2]).text().trim(); 
       const [h, m] = durationStr.split(':').map(Number);
       const durationSec = (h * 3600) + (m * 60);
       const endTime = new Date(startTime.getTime() + durationSec * 1000);
 
-      // Filter by timeframe
       if (isContestInTimeframe(startTime.getTime() / 1000)) {
         contests.push({
           site: 'AtCoder',
@@ -173,7 +164,7 @@ async function fetchAtCoderContests() {
   }
 }
 
-// 4. KONTESTS (Aggregator - Backup for others)
+// 4. KONTESTS (Aggregator - Backup)
 async function fetchKontestsContests() {
   try {
     const res = await axios.get('https://kontests.net/api/v1/all', {
@@ -187,7 +178,6 @@ async function fetchKontestsContests() {
     return (res.data || [])
       .filter(c => {
         const site = c.site || '';
-        // Skip platforms we now fetch directly to avoid duplicates
         if (site.includes('CodeForces') || site.includes('LeetCode') || site.includes('AtCoder')) return false;
         
         try {
@@ -205,14 +195,12 @@ async function fetchKontestsContests() {
         url: c.url
       }));
   } catch (e) { 
-    // This API is flaky, so we log it but don't crash
     console.error('[Contests] Kontests API failed (Backup):', e.message);
     return []; 
   }
 }
 
 async function fetchAllContests() {
-  // Execute all fetchers in parallel. 'allSettled' ensures one failure doesn't stop others.
   const [cf, lc, ac, other] = await Promise.allSettled([
     fetchCodeforcesContests(),
     fetchLeetCodeContests(),
@@ -220,7 +208,6 @@ async function fetchAllContests() {
     fetchKontestsContests()
   ]);
   
-  // Combine results
   const all = [
     ...(cf.status === 'fulfilled' ? cf.value : []),
     ...(lc.status === 'fulfilled' ? lc.value : []),
@@ -228,7 +215,6 @@ async function fetchAllContests() {
     ...(other.status === 'fulfilled' ? other.value : [])
   ];
   
-  // Deduplicate based on Name + Time
   const unique = [];
   const seen = new Set();
   all.forEach(c => {
@@ -360,9 +346,7 @@ async function fetchLeetCodeData(username) {
     };
   } catch { return null; }
 }
-// --- NEW SCRAPERS FOR MISSING PLATFORMS ---
 
-// 1. CODECHEF (Scraping)
 async function fetchCodechefData(username) {
   try {
     const { data } = await axios.get(`https://www.codechef.com/users/${username}`, {
@@ -374,10 +358,6 @@ async function fetchCodechefData(username) {
     const rating = parseInt($('.rating-number').text().replace(/\D/g, '')) || 0;
     const stars = $('.rating-star').text().trim() || 'Unrated';
     const globalRank = parseInt($('.rating-ranks ul li:first-child a strong').text()) || 0;
-    
-    // CodeChef structure makes extracting exact "Total Solved" hard without deep scraping.
-    // We usually extract "Fully Solved" from the practice section if available, 
-    // but for speed, we often use the visual rating as the primary metric.
     
     return {
       platform: 'CodeChef',
@@ -393,7 +373,6 @@ async function fetchCodechefData(username) {
   }
 }
 
-// 2. GEEKSFORGEEKS (Scraping)
 async function fetchGeeksForGeeksData(username) {
   try {
     const { data } = await axios.get(`https://auth.geeksforgeeks.org/user/${username}/practice/`, {
@@ -402,16 +381,12 @@ async function fetchGeeksForGeeksData(username) {
     });
     
     const $ = cheerio.load(data);
-    
-    // GFG classes change often. We look for text-based anchors.
     let totalSolved = 0;
     let score = 0;
     
-    // Locate the "Problems Solved" text and get the next element or the number inside
     $('div, span, h6').each((i, el) => {
       const text = $(el).text().trim();
       if (text.includes('Problem Solved') || text.includes('Problems Solved')) {
-         // Usually the number is in a sibling or parent depending on GFG's current UI
          const num = $(el).next().text() || $(el).parent().find('.scoreCard_head_card_left--score__pC6ZA').text();
          totalSolved = parseInt(num) || totalSolved;
       }
@@ -421,7 +396,6 @@ async function fetchGeeksForGeeksData(username) {
       }
     });
 
-    // Fallback scraping for current GFG Layout (Material UI)
     if (totalSolved === 0) {
         const rawText = $.text();
         const solvedMatch = rawText.match(/Problems Solved:\s*(\d+)/);
@@ -441,7 +415,6 @@ async function fetchGeeksForGeeksData(username) {
   }
 }
 
-// 3. ATCODER PROFILES (Scraping - Distinct from Contests)
 async function fetchAtCoderProfile(username) {
   try {
     const { data } = await axios.get(`https://atcoder.jp/users/${username}`, {
@@ -453,7 +426,6 @@ async function fetchAtCoderProfile(username) {
     let rating = 0;
     let rank = 0;
     
-    // Parse the table
     $('table.dl-table tbody tr').each((i, el) => {
       const header = $(el).find('th').text().trim();
       const value = $(el).find('td').text().trim();
@@ -478,6 +450,7 @@ async function fetchAtCoderProfile(username) {
     return null;
   }
 }
+
 async function fetchCodeforcesData(username) {
   try {
     const [info, status] = await Promise.all([
@@ -513,22 +486,17 @@ async function fetchCodeforcesData(username) {
 }
 
 async function aggregateAllPlatforms(userProfiles) {
-  // Execute all fetches in parallel
   const results = await Promise.all([
     userProfiles.leetcode?.trim() ? fetchLeetCodeData(userProfiles.leetcode) : null,
     userProfiles.codeforces?.trim() ? fetchCodeforcesData(userProfiles.codeforces) : null,
-    // --- ADDED THESE LINES ---
     userProfiles.codechef?.trim() ? fetchCodechefData(userProfiles.codechef) : null,
     userProfiles.geeksforgeeks?.trim() ? fetchGeeksForGeeksData(userProfiles.geeksforgeeks) : null,
     userProfiles.atcoder?.trim() ? fetchAtCoderProfile(userProfiles.atcoder) : null
   ]);
   
   const valid = results.filter(r => r);
-  
-  // Sum up total solved (Note: AtCoder/CodeChef often don't provide easy "Total Solved" counts in simple scrape)
   const totalSolved = valid.reduce((sum, r) => sum + (r.totalSolved || 0), 0);
   
-  // Aggregate Topics
   const allTopics = {};
   valid.forEach(r => {
     if (r.topics) {
@@ -618,17 +586,31 @@ async function saveTestResult(userId, stats) {
 //  SECTION 4: ROADMAP (HIGH QUANTITY & DOMAIN AWARE)
 // ============================================================================
 
-const ROADMAP_PROMPT = `You are an expert technical mentor. Generate a structured learning roadmap based on the user's specific request.
+// --- REVISED PROMPT FOR CURRICULUM VS DSA ---
+const ROADMAP_PROMPT = `You are a Senior Technical Curriculum Developer. Generate a structured learning roadmap.
 
-CRITICAL INSTRUCTIONS:
-1. OUTPUT FORMAT: STRICT JSON only. No Markdown.
-2. VOLUME: Each 'task' MUST contain 5 to 7 practice questions. This is mandatory.
-3. DOMAIN DETECTION:
-   - IF DSA/ALGO: Use "LeetCode" or "CodeForces" as the platform. Provide REAL problem IDs.
-   - IF AI/ML/WEB/DEV: Do NOT use LeetCode IDs. Use "Project", "Kaggle", "Implementation".
-     - Set "problem_id" to a slug (e.g. "proj-mnist").
+CRITICAL INSTRUCTION: DETECT THE DOMAIN (DSA vs DEVELOPMENT)
 
-JSON STRUCTURE:
+--- MODE A: DSA & COMPETITIVE PROGRAMMING ---
+(Triggered by: "Arrays", "DP", "Trees", "LeetCode", "Logic")
+* **Focus:** Raw coding practice.
+* **Item Style:** Real Algorithmic Problems.
+* **Platform:** "LeetCode", "CodeForces".
+* **Title:** "Two Sum", "Merge Intervals".
+
+--- MODE B: DEVELOPMENT & ENGINEERING (THEORY + PRACTICE) ---
+(Triggered by: "React", "Node", "Web Dev", "App Dev", "System Design", "Backend")
+* **Focus:** A "University Course" style curriculum.
+* **Item Style:** You MUST mix "Concepts" with "Tasks". Do NOT just list projects.
+* **Structure per Task:**
+    1.  **Concept:** A topic the user must read about (Platform: "Concept").
+    2.  **Action:** A small code task to verify knowledge (Platform: "Task").
+* **Example Output for Dev:**
+    - Item 1: "Learn React State vs Props" (Platform: "Concept")
+    - Item 2: "Build a Counter Component" (Platform: "Task")
+    - Item 3: "Understand useEffect Lifecycle" (Platform: "Concept")
+
+JSON STRUCTURE (Strictly follow this):
 {
   "roadmap_title": "string",
   "user_level": "string",
@@ -641,18 +623,17 @@ JSON STRUCTURE:
       "focus_reason": "string",
       "tasks": [
         {
-          "concept_name": "string",
+          "concept_name": "string (e.g., 'Component Lifecycle' or 'Sliding Window')",
           "priority": "High",
-          "estimated_time_minutes": 90,
           "difficulty": "Medium",
           "why_this_matters": "string",
           "practice_questions": [
              { 
-               "question_title": "string", 
-               "problem_id": "string", 
-               "platform": "string", 
+               "question_title": "string (The specific concept or task)", 
+               "problem_id": "string (slug, e.g., 'concept-props' or '1')", 
+               "platform": "string (Concept, Task, Project, or LeetCode)", 
                "difficulty": "Easy",
-               "question_description": "string"
+               "question_description": "Brief instruction on what to learn or build."
              }
           ]
         }
@@ -771,12 +752,10 @@ app.get('/api/contests', async (req, res) => {
   try {
     const cached = await getCachedContests();
     
-    // Serve from cache if fresh
     if (cached && !cached.isExpired && cached.contests.length > 0) {
       return res.json({ contests: cached.contests, source: 'cache' });
     }
     
-    // Fetch fresh
     const fresh = await fetchAllContests();
     
     if (fresh && fresh.length > 0) {
@@ -784,7 +763,6 @@ app.get('/api/contests', async (req, res) => {
       return res.json({ contests: fresh, source: 'api' });
     }
     
-    // Serve stale cache if API failed
     if (cached && cached.contests.length > 0) {
       return res.json({ contests: cached.contests, source: 'cache_stale' });
     }
@@ -830,26 +808,28 @@ app.get('/api/aptitude-history/:userId', async (req, res) => {
   }
 });
 
-// --- Roadmap Routes ---
+// --- Roadmap Routes (UPDATED) ---
 app.post('/api/generate-roadmap', async (req, res) => {
   try {
     const { userId, userContext, skillSnapshot } = req.body;
     if (!userId) return res.status(400).json({ error: 'Missing userId' });
     
+    // CONTEXTUAL PROMPT
     const userPrompt = `
-    USER GOAL/CONTEXT: "${userContext || 'Beginner'}"
-    USER STATS: ${JSON.stringify(skillSnapshot || {})}
+    USER CONTEXT: "${userContext || 'Full Stack Development'}"
+    STATS: ${JSON.stringify(skillSnapshot || {})}
     
-    TASK: Create a 3-Phase Roadmap.
+    INSTRUCTIONS:
+    1. Create a 3-Phase Roadmap.
+    2. **IF DEVELOPMENT (Web/App/ML):**
+       - DO NOT just list "Build a Netflix Clone". That is too big.
+       - Break it down: "Learn Flexbox" -> "Layout Header" -> "Fetch API" -> "Display Data".
+       - Treat "practice_questions" as "Learning Steps".
+       - Use "Platform" field to indicate "Concept", "Doc Read", or "Code Task".
+    3. **IF DSA:**
+       - Provide standard LeetCode/CodeForces problems.
     
-    STRICT RULES:
-    1. QUANTITY: Generate 5-7 questions per task. Do not output less.
-    2. DOMAIN LOGIC:
-       - AI/Web/Dev -> Platform: "Project" or "Implementation". (NO fake LeetCode IDs).
-       - DSA -> Platform: "LeetCode" (Real IDs).
-    3. DIFFICULTY: Mix Easy, Medium, Hard.
-    
-    Ensure the JSON is valid.
+    Output STRICT JSON.
     `;
     
     const completion = await groq.chat.completions.create({
@@ -857,8 +837,9 @@ app.post('/api/generate-roadmap', async (req, res) => {
         { role: 'system', content: ROADMAP_PROMPT },
         { role: 'user', content: userPrompt }
       ],
-      model: 'llama-3.1-8b-instant', 
-      temperature: 0.3,
+      // USING 70B MODEL FOR BETTER LOGIC/STRUCTURE
+      model: 'llama-3.3-70b-versatile', 
+      temperature: 0.2,
       max_tokens: 8000,
       response_format: { type: 'json_object' }
     });
@@ -879,6 +860,7 @@ app.post('/api/generate-roadmap', async (req, res) => {
     
     res.json({ success: true, roadmap: { id, ...roadmap } });
   } catch (e) {
+    console.error("Roadmap Gen Error:", e.message);
     res.status(500).json({ error: e.message });
   }
 });
@@ -978,6 +960,4 @@ const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log('\n' + '='.repeat(60));
   console.log(` SERVER RUNNING ON PORT ${PORT}`);
- 
 });
-
