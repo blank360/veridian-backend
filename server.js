@@ -21,7 +21,7 @@ app.use(express.json({ limit: '10mb' }));
 app.get('/health', (req, res) => res.json({ 
   status: 'ok', 
   timestamp: new Date().toISOString(),
-  version: '4.5.0' // Bumped for Quantity Fix
+  version: '4.6.0' // Bumped for Real Data Fix
 }));
 
 // --- FIREBASE INIT ---
@@ -578,38 +578,36 @@ async function saveTestResult(userId, stats) {
 }
 
 // ============================================================================
-//  SECTION 4: ROADMAP (HIGH QUALITY & HIGH QUANTITY)
+//  SECTION 4: ROADMAP (REAL DATA & HIGH QUANTITY)
 // ============================================================================
 
-// --- REVISED PROMPT WITH STRICT QUANTITY CONTROLS ---
+// --- REVISED PROMPT FOR REAL LEETCODE DATA ---
 const ROADMAP_PROMPT = `You are a Senior Technical Curriculum Developer. Generate a structured learning roadmap.
 
-CRITICAL INSTRUCTION: DETECT THE DOMAIN (DSA vs DEVELOPMENT)
+CRITICAL INSTRUCTIONS:
 
---- GLOBAL RULE: QUANTITY ---
-Each Task MUST contain 5 to 8 items/questions. Do NOT generate fewer than 5.
+1. **QUANTITY:** Each Task MUST contain 5 to 8 items/questions. Do NOT generate fewer than 5.
+2. **REAL DATA ENFORCEMENT:** You must output REAL, EXISTENT LeetCode problem titles.
+   - **FORBIDDEN:** Do NOT create fake problems like "Array Basics #1" or "LeetCode #2".
+   - **FORBIDDEN:** Do NOT use sequential IDs (1, 2, 3...) unless they match the real LeetCode ID (e.g. 1 is Two Sum).
+   - **ID FORMAT:** For the 'problem_id' field, use the LeetCode URL SLUG (e.g. 'container-with-most-water') if you are not 100% sure of the number. It is better to use the slug.
 
 --- MODE A: DSA & COMPETITIVE PROGRAMMING ---
-(Triggered by: "Arrays", "DP", "Trees", "LeetCode", "Logic")
 * **Focus:** Raw coding practice.
-* **Item Style:** Real Algorithmic Problems.
-* **Platform:** "LeetCode", "CodeForces".
-* **Title:** "Two Sum", "Merge Intervals".
+* **Item Style:** Real LeetCode Problems.
+* **Example:**
+    - Title: "Best Time to Buy and Sell Stock"
+    - ID: "best-time-to-buy-and-sell-stock" (Slug preferred)
+    - Platform: "LeetCode"
 
---- MODE B: DEVELOPMENT & ENGINEERING (THEORY + PRACTICE) ---
-(Triggered by: "React", "Node", "Web Dev", "App Dev", "System Design", "Backend")
+--- MODE B: DEVELOPMENT & ENGINEERING ---
 * **Focus:** A "University Course" style curriculum.
-* **Item Style:** You MUST mix "Concepts" with "Tasks". Do NOT just list projects.
-* **Structure per Task:**
-    1.  **Concept:** A topic the user must read about (Platform: "Concept").
-    2.  **Action:** A small code task to verify knowledge (Platform: "Task").
-    3.  **Project:** A mini implementation (Platform: "Project").
-* **Example Output for Dev:**
-    - Item 1: "Learn React State vs Props" (Platform: "Concept")
-    - Item 2: "Build a Counter Component" (Platform: "Task")
-    - Item 3: "Understand useEffect Lifecycle" (Platform: "Concept")
-    - Item 4: "Fetch Data from API" (Platform: "Task")
-    - Item 5: "Build a Todo List" (Platform: "Project")
+* **Item Style:** Mix "Concepts" with "Tasks".
+* **Structure per Task:** Concept -> Task -> Implementation.
+* **Example:**
+    - Item 1: "Learn React State" (Platform: "Concept")
+    - Item 2: "Build Counter" (Platform: "Task")
+    - Item 3: "Fetch Data" (Platform: "Project")
 
 JSON STRUCTURE (Strictly follow this):
 {
@@ -624,17 +622,17 @@ JSON STRUCTURE (Strictly follow this):
       "focus_reason": "string",
       "tasks": [
         {
-          "concept_name": "string (e.g., 'Component Lifecycle' or 'Sliding Window')",
+          "concept_name": "string",
           "priority": "High",
           "difficulty": "Medium",
           "why_this_matters": "string",
           "practice_questions": [
              { 
-               "question_title": "string (The specific concept or task)", 
-               "problem_id": "string (slug, e.g., 'concept-props' or '1')", 
-               "platform": "string (Concept, Task, Project, or LeetCode)", 
+               "question_title": "string (Real LeetCode Title or Dev Task)", 
+               "problem_id": "string (LeetCode Slug e.g. 'two-sum' OR 'concept-id')", 
+               "platform": "string (LeetCode, Concept, Task, or Project)", 
                "difficulty": "Easy",
-               "question_description": "Brief instruction on what to learn or build."
+               "question_description": "Brief description."
              }
           ]
         }
@@ -809,7 +807,7 @@ app.get('/api/aptitude-history/:userId', async (req, res) => {
   }
 });
 
-// --- Roadmap Routes (UPDATED WITH QUANTITY) ---
+// --- Roadmap Routes (UPDATED) ---
 app.post('/api/generate-roadmap', async (req, res) => {
   try {
     const { userId, userContext, skillSnapshot } = req.body;
@@ -822,12 +820,13 @@ app.post('/api/generate-roadmap', async (req, res) => {
     
     INSTRUCTIONS:
     1. Create a 3-Phase Roadmap.
-    2. **QUANTITY:** MINIMUM 5-8 QUESTIONS/STEPS PER TASK. (Mandatory).
+    2. **QUANTITY:** MINIMUM 5-8 QUESTIONS/STEPS PER TASK.
     3. **IF DEVELOPMENT (Web/App/ML):**
        - Break it down: Concept -> Task -> Implementation.
        - Use "Platform" field to indicate "Concept", "Doc Read", or "Code Task".
     4. **IF DSA:**
-       - Provide standard LeetCode/CodeForces problems (5-8 per task).
+       - **REAL DATA ONLY:** Use real LeetCode titles (e.g. "Trapping Rain Water").
+       - **ID:** Use slugs (e.g. 'trapping-rain-water') NOT random numbers.
     
     Output STRICT JSON.
     `;
