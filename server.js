@@ -21,7 +21,7 @@ app.use(express.json({ limit: '10mb' }));
 app.get('/health', (req, res) => res.json({ 
   status: 'ok', 
   timestamp: new Date().toISOString(),
-  version: '4.6.0' // Bumped for Real Data Fix
+  version: '4.7.0' // Bumped for GFG Fix
 }));
 
 // --- FIREBASE INIT ---
@@ -370,43 +370,70 @@ async function fetchCodechefData(username) {
   }
 }
 
+// --- UPDATED GFG FUNCTION (FIXED) ---
 async function fetchGeeksForGeeksData(username) {
   try {
-    const { data } = await axios.get(`https://auth.geeksforgeeks.org/user/${username}/practice/`, {
+    // 1. Try Internal API (Most reliable, used by GFG's own UI)
+    try {
+      const apiRes = await axios.get(
+        `https://practiceapi.geeksforgeeks.org/api/v1/users/${username}/coding-profile`, 
+        { timeout: 5000, headers: { 'User-Agent': CONFIG.USER_AGENT } }
+      );
+      if (apiRes.data && apiRes.data.values) {
+        return {
+          platform: 'GeeksForGeeks',
+          username,
+          totalSolved: apiRes.data.values.total_problems_solved || 0,
+          codingScore: apiRes.data.values.coding_score || 0,
+          lastUpdated: new Date().toISOString()
+        };
+      }
+    } catch (apiError) {
+      // API failed, proceed to scraping fallback
+    }
+
+    // 2. Fallback: Scrape the main profile page (New UI)
+    const { data } = await axios.get(`https://www.geeksforgeeks.org/user/${username}/`, {
       headers: { 'User-Agent': CONFIG.USER_AGENT },
       timeout: CONFIG.REQUEST_TIMEOUT
     });
-    
+
     const $ = cheerio.load(data);
     let totalSolved = 0;
-    let score = 0;
-    
-    $('div, span, h6').each((i, el) => {
-      const text = $(el).text().trim();
-      if (text.includes('Problem Solved') || text.includes('Problems Solved')) {
-         const num = $(el).next().text() || $(el).parent().find('.scoreCard_head_card_left--score__pC6ZA').text();
-         totalSolved = parseInt(num) || totalSolved;
-      }
-      if (text.includes('Coding Score')) {
-         const num = $(el).next().text() || $(el).parent().find('.scoreCard_head_card_left--score__pC6ZA').text();
-         score = parseInt(num) || score;
-      }
-    });
+    let codingScore = 0;
 
+    // Strategy: Look for specific text labels in the new UI structure
+    const bodyText = $('body').text();
+    
+    // Regex matching for text patterns like "Problems Solved: 1"
+    const solvedMatch = bodyText.match(/Problems Solved\s*:\s*(\d+)/i) || 
+                        bodyText.match(/Problems Solved\s*(\d+)/i);
+    
+    const scoreMatch = bodyText.match(/Coding Score\s*:\s*(\d+)/i) || 
+                       bodyText.match(/Coding Score\s*(\d+)/i);
+
+    if (solvedMatch) totalSolved = parseInt(solvedMatch[1]);
+    if (scoreMatch) codingScore = parseInt(scoreMatch[1]);
+
+    // DOM Fallback: Look for the specific card classes if regex fails
     if (totalSolved === 0) {
-        const rawText = $.text();
-        const solvedMatch = rawText.match(/Problems Solved:\s*(\d+)/);
-        if (solvedMatch) totalSolved = parseInt(solvedMatch[1]);
+        $('.coding_score_card').each((i, el) => {
+            const label = $(el).find('.card_name').text().trim();
+            const value = $(el).find('.score_value').text().trim();
+            if (label.includes('Problems Solved')) totalSolved = parseInt(value) || 0;
+            if (label.includes('Coding Score')) codingScore = parseInt(value) || 0;
+        });
     }
 
     return {
       platform: 'GeeksForGeeks',
       username,
       totalSolved,
-      codingScore: score,
+      codingScore,
       lastUpdated: new Date().toISOString()
     };
   } catch (e) {
+    console.error(`[Profile] GFG failed for ${username}: ${e.message}`);
     return null;
   }
 }
@@ -581,7 +608,6 @@ async function saveTestResult(userId, stats) {
 //  SECTION 4: ROADMAP (REAL DATA & HIGH QUANTITY)
 // ============================================================================
 
-// --- REVISED PROMPT FOR REAL LEETCODE DATA ---
 const ROADMAP_PROMPT = `You are a Senior Technical Curriculum Developer. Generate a structured learning roadmap.
 
 CRITICAL INSTRUCTIONS:
@@ -807,7 +833,7 @@ app.get('/api/aptitude-history/:userId', async (req, res) => {
   }
 });
 
-// --- Roadmap Routes (UPDATED) ---
+// --- Roadmap Routes ---
 app.post('/api/generate-roadmap', async (req, res) => {
   try {
     const { userId, userContext, skillSnapshot } = req.body;
